@@ -21,6 +21,8 @@
   .stale { color: #c2410c; }
   svg { width: 100%; height: auto; display: block; }
   .empty { color: var(--dim); font-size: .875rem; padding: 2rem 0; text-align: center; }
+  .ticks { position: relative; height: 1.1rem; margin-top: .4rem; }
+  .ticks span { position: absolute; font-size: .6875rem; color: var(--dim); white-space: nowrap; }
 </style>
 <main>
   <h1>RSF WEIGHT ROOMS</h1>
@@ -47,13 +49,27 @@
     {% if sample_count > 1 %}
       <svg viewBox="0 0 {{ width }} {{ height }}" preserveAspectRatio="none" role="img"
            aria-label="Occupancy over the course of today">
-        <line x1="0" y1="{{ height }}" x2="{{ width }}" y2="{{ height }}" stroke="var(--line)" />
+        {% for tick in ticks %}
+          <line x1="{{ (tick.pct / 100 * width) | round(1) }}" y1="0"
+                x2="{{ (tick.pct / 100 * width) | round(1) }}" y2="{{ height }}"
+                stroke="var(--line)" vector-effect="non-scaling-stroke" />
+        {% endfor %}
+        <line x1="0" y1="{{ height }}" x2="{{ width }}" y2="{{ height }}"
+              stroke="var(--line)" vector-effect="non-scaling-stroke" />
         <line x1="0" y1="{{ height / 2 }}" x2="{{ width }}" y2="{{ height / 2 }}"
-              stroke="var(--line)" stroke-dasharray="3 4" />
+              stroke="var(--line)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke" />
         <polyline points="{{ points }}" fill="none" stroke="#2563eb" stroke-width="2"
-                  stroke-linejoin="round" stroke-linecap="round" />
+                  stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
       </svg>
-      <div class="meta">Today &middot; midnight to midnight &middot; {{ sample_count }} samples</div>
+      <div class="ticks">
+        {% for tick in ticks %}
+          <span style="left: {{ tick.pct }}%;
+                       transform: translateX({% if loop.first %}0{% elif loop.last %}-100%{% else %}-50%{% endif %});">
+            {{ tick.label }}
+          </span>
+        {% endfor %}
+      </div>
+      <div class="meta">Today &middot; {{ sample_count }} samples</div>
     {% else %}
       <div class="empty">
         Not enough data to chart yet.<br>

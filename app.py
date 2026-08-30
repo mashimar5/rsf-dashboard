@@ -33,6 +33,20 @@ def todays_readings(connection):
     return store.since(connection, midnight), midnight
 
 
+def hour_label(hour: int) -> str:
+    """0 -> 12a, 13 -> 1p"""
+    hour = hour % 24
+    return f"{hour % 12 or 12}{'a' if hour < 12 else 'p'}"
+
+
+def chart_ticks(step_hours: int = 4):
+    """Evenly spaced x-axis ticks across a midnight-to-midnight day"""
+    return [
+        {"pct": hour / 24 * 100, "label": hour_label(hour)}
+        for hour in range(0, 25, step_hours)
+    ]
+
+
 def chart_points(readings, midnight):
     """Readings -> an SVG polyline, x by time of day, y by percent full"""
     points = []
@@ -84,6 +98,7 @@ def index():
         pct=percentage(reading.count, reading.capacity) if reading and reading.capacity else None,
         local_time=reading.observed_at.astimezone(LOCAL_TZ) if reading else None,
         points=chart_points(readings, midnight),
+        ticks=chart_ticks(),
         sample_count=len(readings),
         width=CHART_WIDTH,
         height=CHART_HEIGHT,
