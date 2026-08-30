@@ -19,6 +19,9 @@
   .bar > div { height: 100%; border-radius: 5px; transition: width .3s; }
   .meta { font-size: .8125rem; color: var(--dim); }
   .stale { color: #c2410c; }
+  .hours { font-size: .8125rem; color: var(--dim); margin-top: .15rem; }
+  .hours b { color: var(--fg); font-weight: 500; }
+  .closed { color: #c2410c; }
   svg { width: 100%; height: auto; display: block; }
   .empty { color: var(--dim); font-size: .875rem; padding: 2rem 0; text-align: center; }
   .chart { padding-left: 2.3rem; }
@@ -68,6 +71,15 @@
       </div>
     {% else %}
       <div class="empty">No reading available. Is the API reachable?</div>
+    {% endif %}
+    {% if hours_today %}
+      <div class="hours">
+        {% if hours_today.opens is not none %}
+          Open today <b>{{ hours_today.text }}</b>
+        {% else %}
+          <span class="closed">{{ hours_today.text }}</span>
+        {% endif %}
+      </div>
     {% endif %}
   </div>
 

@@ -2,3 +2,4 @@
 .env
 __pycache__/
 readings.db*
+hours_cache.json

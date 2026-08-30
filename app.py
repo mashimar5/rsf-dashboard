@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, render_template
 
+import hours
 import store
 from density import fetch_reading, percentage
 
@@ -140,10 +141,10 @@ if COLLECT_INTERVAL:
 @app.route("/")
 def index():
     connection = store.connect()
+    now_local = datetime.now(LOCAL_TZ)
     reading, is_live = current_reading(connection)
     readings, midnight = todays_readings(connection)
 
-    now_local = datetime.now(LOCAL_TZ)
     buckets, weeks = typical_curve(
         store.all_readings(connection), now_local.weekday(), now_local.date(), LOCAL_TZ
     )
@@ -163,6 +164,7 @@ def index():
     return render_template(
         "index.html",
         samples=samples,
+        hours_today=hours.todays_hours(now_local.date()),
         reading=reading,
         is_live=is_live,
         pct=percentage(reading.count, reading.capacity) if reading and reading.capacity else None,
