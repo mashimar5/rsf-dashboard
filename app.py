@@ -57,6 +57,11 @@ def chart_ticks(step_hours: int = 1):
     ]
 
 
+def chart_y_ticks(step_percent: int = 25):
+    """Horizontal gridline levels, as percent of capacity"""
+    return [{"pct": p, "label": f"{p}%"} for p in range(0, 101, step_percent)]
+
+
 def typical_curve(readings, weekday, today, tz):
     """Median occupancy by time-of-day across prior instances of one weekday.
 
@@ -152,6 +157,7 @@ def index():
         local_time=reading.observed_at.astimezone(LOCAL_TZ) if reading else None,
         points=chart_points(readings, midnight),
         ticks=chart_ticks(),
+        y_ticks=chart_y_ticks(),
         typical_points=curve_points(buckets) if show_typical else "",
         typical_weeks=weeks,
         weekday_name=now_local.strftime("%A"),

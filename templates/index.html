@@ -21,6 +21,11 @@
   .stale { color: #c2410c; }
   svg { width: 100%; height: auto; display: block; }
   .empty { color: var(--dim); font-size: .875rem; padding: 2rem 0; text-align: center; }
+  .chart { padding-left: 2.3rem; }
+  .plot { position: relative; }
+  .ylabels { position: absolute; left: -2.3rem; top: 0; bottom: 0; width: 2rem; }
+  .ylabels span { position: absolute; right: 0; transform: translateY(-50%);
+                  font-size: .625rem; color: var(--dim); }
   .ticks { position: relative; height: 1.1rem; margin-top: .4rem; }
   .ticks span { position: absolute; font-size: .625rem; color: var(--dim); white-space: nowrap; }
   .ticks .major { color: var(--fg); opacity: .55; }
@@ -55,6 +60,13 @@
 
   <div class="card">
     {% if sample_count > 1 %}
+      <div class="chart">
+      <div class="plot">
+        <div class="ylabels">
+          {% for y in y_ticks %}
+            <span style="top: {{ 100 - y.pct }}%">{{ y.label }}</span>
+          {% endfor %}
+        </div>
       <svg viewBox="0 0 {{ width }} {{ height }}" preserveAspectRatio="none" role="img"
            aria-label="Occupancy over the course of today">
         {% for tick in ticks %}
@@ -65,8 +77,12 @@
         {% endfor %}
         <line x1="0" y1="{{ height }}" x2="{{ width }}" y2="{{ height }}"
               stroke="var(--line)" vector-effect="non-scaling-stroke" />
-        <line x1="0" y1="{{ height / 2 }}" x2="{{ width }}" y2="{{ height / 2 }}"
-              stroke="var(--line)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke" />
+        {% for y in y_ticks %}
+          <line x1="0" y1="{{ (height - y.pct / 100 * height) | round(1) }}"
+                x2="{{ width }}" y2="{{ (height - y.pct / 100 * height) | round(1) }}"
+                stroke="var(--line)" vector-effect="non-scaling-stroke"
+                opacity="{{ 1 if y.pct in (0, 100) else 0.45 }}" />
+        {% endfor %}
         {% if typical_points %}
           <polyline points="{{ typical_points }}" fill="none" stroke="var(--dim)"
                     stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round"
@@ -75,6 +91,7 @@
         <polyline points="{{ points }}" fill="none" stroke="#2563eb" stroke-width="2"
                   stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
       </svg>
+      </div>
       <div class="ticks">
         {% for tick in ticks %}
           <span class="{{ 'major' if tick.major else 'minor' }}"
@@ -83,6 +100,7 @@
             {{ tick.label }}
           </span>
         {% endfor %}
+      </div>
       </div>
       <div class="meta legend">
         <span><i class="today"></i>Today &middot; {{ sample_count }} samples</span>
