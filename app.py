@@ -197,6 +197,50 @@ def api_current():
     )
 
 
+@app.route("/api/hours")
+def api_hours():
+    """What the scraper currently believes, and where it got it.
+
+    Exists because hours failures hide themselves on the page: if RecWell
+    rewrites the table headers, the line simply vanishes. This shows whether
+    the tables still parse and which one each day resolved to.
+    """
+    markup = hours.cached_markup()
+    if not markup:
+        return jsonify({"error": "no hours available", "cache": hours.cache_info()}), 503
+
+    def clock(minutes):
+        return None if minutes is None else f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+    def resolve(day):
+        found = hours.hours_for(day, markup)
+        if not found:
+            return {"date": day.isoformat(), "weekday": day.strftime("%A"), "hours": None}
+        return {
+            "date": day.isoformat(),
+            "weekday": day.strftime("%A"),
+            "text": found.text,
+            "opens": clock(found.opens),
+            "closes": clock(found.closes),
+            "closed": found.opens is None,
+            "source": found.source,
+        }
+
+    today = datetime.now(LOCAL_TZ).date()
+    return jsonify(
+        {
+            "today": resolve(today),
+            "week_ahead": [resolve(today + timedelta(days=n)) for n in range(1, 8)],
+            "cache": hours.cache_info(),
+            "source_url": hours.HOURS_URL,
+            "tables": [
+                {"header": header, "rows": rows}
+                for header, rows in hours.parse_tables(markup)
+            ],
+        }
+    )
+
+
 @app.route("/api/history")
 def api_history():
     from flask import request

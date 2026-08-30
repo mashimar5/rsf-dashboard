@@ -181,6 +181,24 @@ def cached_markup(now=None) -> str | None:
     return markup
 
 
+def cache_info(now=None):
+    """When the tables were last fetched, for diagnostics"""
+    now = now or datetime.now(timezone.utc)
+    if not CACHE_PATH.exists():
+        return {"cached": False}
+    try:
+        fetched_at = datetime.fromisoformat(json.loads(CACHE_PATH.read_text())["fetched_at"])
+    except (ValueError, KeyError, OSError):
+        return {"cached": False, "unreadable": True}
+    age = now - fetched_at
+    return {
+        "cached": True,
+        "fetched_at": fetched_at.isoformat(),
+        "age_hours": round(age.total_seconds() / 3600, 2),
+        "stale": age >= MAX_AGE,
+    }
+
+
 def todays_hours(day: date) -> DayHours | None:
     markup = cached_markup()
     if not markup:
