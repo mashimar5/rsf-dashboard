@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from statistics import median
 from zoneinfo import ZoneInfo
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, send_from_directory
 
 import hours
 import store
@@ -217,6 +217,14 @@ def index():
         width=CHART_WIDTH,
         height=CHART_HEIGHT,
     )
+
+
+@app.route("/apple-touch-icon.png")
+@app.route("/apple-touch-icon-precomposed.png")
+def apple_touch_icon():
+    """iOS probes these root paths when it cannot find the link tag -- for
+    instance from a cached copy of the page saved before the tag existed."""
+    return send_from_directory(app.static_folder, "apple-touch-icon.png")
 
 
 @app.route("/api/current")
