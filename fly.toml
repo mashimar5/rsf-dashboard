@@ -1,0 +1,22 @@
+# App name must be globally unique; `fly launch` will offer to rename it.
+app = "rsf-dashboard"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  RSF_DB_PATH = "/data/readings.db"
+  COLLECT_INTERVAL = "300"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_start_machines = true
+  # Must stay false. Fly's default is to sleep idle machines, which would
+  # stop the collector whenever nobody is looking at the dashboard.
+  auto_stop_machines = false
+  min_machines_running = 1
+
+[mounts]
+  source = "rsf_data"
+  destination = "/data"

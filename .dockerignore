@@ -1,0 +1,11 @@
+.venv
+.env
+readings.db
+readings.db-wal
+readings.db-shm
+__pycache__
+*.pyc
+.git
+.gitignore
+.claude
+test_density.py
