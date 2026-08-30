@@ -26,6 +26,19 @@
   .ylabels { position: absolute; left: -2.3rem; top: 0; bottom: 0; width: 2rem; }
   .ylabels span { position: absolute; right: 0; transform: translateY(-50%);
                   font-size: .625rem; color: var(--dim); }
+  [hidden] { display: none !important; }
+  .plot { touch-action: pan-y; }
+  .cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--fg);
+            opacity: .25; pointer-events: none; }
+  .dot { position: absolute; width: 9px; height: 9px; border-radius: 50%;
+         background: #2563eb; border: 2px solid var(--card); transform: translate(-50%, -50%);
+         pointer-events: none; }
+  .tip { position: absolute; transform: translate(-50%, -100%); pointer-events: none;
+         background: var(--fg); color: var(--card); border-radius: 6px; padding: .4rem .55rem;
+         font-size: .75rem; line-height: 1.35; white-space: nowrap; margin-top: -12px;
+         box-shadow: 0 2px 10px rgba(0,0,0,.18); }
+  .tip b { font-weight: 600; }
+  .tip .t { opacity: .7; font-size: .6875rem; }
   .ticks { position: relative; height: 1.1rem; margin-top: .4rem; }
   .ticks span { position: absolute; font-size: .625rem; color: var(--dim); white-space: nowrap; }
   .ticks .major { color: var(--fg); opacity: .55; }
@@ -67,7 +80,7 @@
             <span style="top: {{ 100 - y.pct }}%">{{ y.label }}</span>
           {% endfor %}
         </div>
-      <svg viewBox="0 0 {{ width }} {{ height }}" preserveAspectRatio="none" role="img"
+      <svg id="chart" viewBox="0 0 {{ width }} {{ height }}" preserveAspectRatio="none" role="img"
            aria-label="Occupancy over the course of today">
         {% for tick in ticks %}
           <line x1="{{ (tick.pct / 100 * width) | round(1) }}" y1="0"
@@ -91,6 +104,9 @@
         <polyline points="{{ points }}" fill="none" stroke="#2563eb" stroke-width="2"
                   stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
       </svg>
+        <div class="cursor" id="cursor" hidden></div>
+        <div class="dot" id="dot" hidden></div>
+        <div class="tip" id="tip" hidden></div>
       </div>
       <div class="ticks">
         {% for tick in ticks %}
@@ -116,3 +132,58 @@
     {% endif %}
   </div>
 </main>
+
+{% if sample_count > 1 %}
+<script>
+  const SAMPLES = {{ samples | tojson }};   // [minutesSinceMidnight, count, capacity]
+  const NEAR_MINUTES = 15;                  // beyond this, treat the time as having no data
+
+  const plot = document.querySelector('.plot');
+  const chart = document.getElementById('chart');
+  const cursor = document.getElementById('cursor');
+  const dot = document.getElementById('dot');
+  const tip = document.getElementById('tip');
+
+  const clockTime = (minutes) => {
+    const h = Math.floor(minutes / 60) % 24, m = Math.floor(minutes % 60);
+    const suffix = h < 12 ? 'AM' : 'PM';
+    return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${suffix}`;
+  };
+
+  const hide = () => { for (const el of [cursor, dot, tip]) el.hidden = true; };
+
+  function show(event) {
+    const box = chart.getBoundingClientRect();
+    const fraction = (event.clientX - box.left) / box.width;
+    if (fraction < 0 || fraction > 1) return hide();
+
+    // nearest sample by time; the chart spans midnight to midnight
+    const target = fraction * 1440;
+    let best = null, bestGap = Infinity;
+    for (const sample of SAMPLES) {
+      const gap = Math.abs(sample[0] - target);
+      if (gap < bestGap) { bestGap = gap; best = sample; }
+    }
+    if (!best || bestGap > NEAR_MINUTES) return hide();   // no reading near this time
+
+    const [minutes, count, capacity] = best;
+    const percent = capacity ? count / capacity : 0;
+    const x = minutes / 1440 * 100;
+
+    cursor.style.left = `${x}%`;
+    dot.style.left = `${x}%`;
+    dot.style.top = `${(1 - percent) * 100}%`;
+    tip.style.left = `${Math.min(Math.max(x, 8), 92)}%`;
+    tip.style.top = `${(1 - percent) * 100}%`;
+    tip.innerHTML =
+      `<b>${count}</b> / ${capacity} &middot; <b>${Math.round(percent * 100)}%</b>` +
+      `<br><span class="t">${clockTime(minutes)}</span>`;
+
+    for (const el of [cursor, dot, tip]) el.hidden = false;
+  }
+
+  plot.addEventListener('pointermove', show);
+  plot.addEventListener('pointerdown', show);
+  plot.addEventListener('pointerleave', hide);
+</script>
+{% endif %}

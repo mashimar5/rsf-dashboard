@@ -149,8 +149,20 @@ def index():
     )
     show_typical = weeks >= MIN_WEEKDAY_INSTANCES
 
+    # [minutes since local midnight, count, capacity] -- compact on purpose,
+    # this is inlined into the page on every load
+    samples = [
+        [
+            int((r.observed_at.astimezone(LOCAL_TZ) - midnight).total_seconds() // 60),
+            r.count,
+            r.capacity,
+        ]
+        for r in readings
+    ]
+
     return render_template(
         "index.html",
+        samples=samples,
         reading=reading,
         is_live=is_live,
         pct=percentage(reading.count, reading.capacity) if reading and reading.capacity else None,
