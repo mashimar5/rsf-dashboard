@@ -22,7 +22,15 @@
   svg { width: 100%; height: auto; display: block; }
   .empty { color: var(--dim); font-size: .875rem; padding: 2rem 0; text-align: center; }
   .ticks { position: relative; height: 1.1rem; margin-top: .4rem; }
-  .ticks span { position: absolute; font-size: .6875rem; color: var(--dim); white-space: nowrap; }
+  .ticks span { position: absolute; font-size: .625rem; color: var(--dim); white-space: nowrap; }
+  .ticks .major { color: var(--fg); opacity: .55; }
+  /* 25 labels need roughly 700px to breathe; below that keep only every 4th */
+  @media (max-width: 700px) { .ticks .minor { display: none; } }
+  .legend { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-top: .1rem; }
+  .legend i { display: inline-block; width: 14px; height: 0; vertical-align: middle;
+              margin-right: .4rem; border-top-width: 2px; }
+  .legend .today { border-top-style: solid; border-top-color: #2563eb; }
+  .legend .typical { border-top-style: dashed; border-top-color: var(--dim); }
 </style>
 <main>
   <h1>RSF WEIGHT ROOMS</h1>
@@ -52,24 +60,36 @@
         {% for tick in ticks %}
           <line x1="{{ (tick.pct / 100 * width) | round(1) }}" y1="0"
                 x2="{{ (tick.pct / 100 * width) | round(1) }}" y2="{{ height }}"
-                stroke="var(--line)" vector-effect="non-scaling-stroke" />
+                stroke="var(--line)" vector-effect="non-scaling-stroke"
+                opacity="{{ 1 if tick.major else 0.45 }}" />
         {% endfor %}
         <line x1="0" y1="{{ height }}" x2="{{ width }}" y2="{{ height }}"
               stroke="var(--line)" vector-effect="non-scaling-stroke" />
         <line x1="0" y1="{{ height / 2 }}" x2="{{ width }}" y2="{{ height / 2 }}"
               stroke="var(--line)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke" />
+        {% if typical_points %}
+          <polyline points="{{ typical_points }}" fill="none" stroke="var(--dim)"
+                    stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round"
+                    stroke-linecap="round" vector-effect="non-scaling-stroke" />
+        {% endif %}
         <polyline points="{{ points }}" fill="none" stroke="#2563eb" stroke-width="2"
                   stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
       </svg>
       <div class="ticks">
         {% for tick in ticks %}
-          <span style="left: {{ tick.pct }}%;
+          <span class="{{ 'major' if tick.major else 'minor' }}"
+                style="left: {{ tick.pct }}%;
                        transform: translateX({% if loop.first %}0{% elif loop.last %}-100%{% else %}-50%{% endif %});">
             {{ tick.label }}
           </span>
         {% endfor %}
       </div>
-      <div class="meta">Today &middot; {{ sample_count }} samples</div>
+      <div class="meta legend">
+        <span><i class="today"></i>Today &middot; {{ sample_count }} samples</span>
+        {% if typical_points %}
+          <span><i class="typical"></i>Typical {{ weekday_name }} &middot; {{ typical_weeks }} weeks</span>
+        {% endif %}
+      </div>
     {% else %}
       <div class="empty">
         Not enough data to chart yet.<br>

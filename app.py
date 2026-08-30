@@ -1,7 +1,9 @@
 import os
 import threading
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta
+from statistics import median
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, render_template
@@ -12,6 +14,9 @@ from density import fetch_reading, percentage
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 CHART_WIDTH = 720
 CHART_HEIGHT = 180
+BUCKET_MINUTES = 30
+# Below this many past instances of a weekday, the median is too noisy to show
+MIN_WEEKDAY_INSTANCES = 3
 
 app = Flask(__name__)
 
@@ -39,12 +44,53 @@ def hour_label(hour: int) -> str:
     return f"{hour % 12 or 12}{'a' if hour < 12 else 'p'}"
 
 
-def chart_ticks(step_hours: int = 4):
-    """Evenly spaced x-axis ticks across a midnight-to-midnight day"""
+def chart_ticks(step_hours: int = 1):
+    """Hourly x-axis ticks. Every fourth is "major" and survives on narrow
+    screens, where 25 labels would overlap into an unreadable smear."""
     return [
-        {"pct": hour / 24 * 100, "label": hour_label(hour)}
+        {
+            "pct": hour / 24 * 100,
+            "label": hour_label(hour),
+            "major": hour % 4 == 0,
+        }
         for hour in range(0, 25, step_hours)
     ]
+
+
+def typical_curve(readings, weekday, today, tz):
+    """Median occupancy by time-of-day across prior instances of one weekday.
+
+    Returns (buckets, day_count). Today is excluded so the day is never
+    compared against a curve it helped produce -- that would drag the two
+    lines together, worst of all early in the morning when today's handful of
+    samples is a large share of the total.
+
+    Median rather than mean: one closure or holiday would visibly drag a mean
+    when only a few weeks of history exist.
+    """
+    buckets = defaultdict(list)
+    days = set()
+    for reading in readings:
+        if not reading.capacity:
+            continue
+        local = reading.observed_at.astimezone(tz)
+        if local.weekday() != weekday or local.date() == today:
+            continue
+        days.add(local.date())
+        slot = (local.hour * 60 + local.minute) // BUCKET_MINUTES
+        buckets[slot].append(percentage(reading.count, reading.capacity))
+    return {slot: median(values) for slot, values in buckets.items()}, len(days)
+
+
+def curve_points(buckets):
+    """Bucketed medians -> an SVG polyline, plotted at each bucket's midpoint"""
+    points = []
+    for slot in sorted(buckets):
+        minutes = slot * BUCKET_MINUTES + BUCKET_MINUTES / 2
+        x = minutes / 1440 * CHART_WIDTH
+        y = CHART_HEIGHT - buckets[slot] * CHART_HEIGHT
+        points.append(f"{x:.1f},{y:.1f}")
+    return " ".join(points)
 
 
 def chart_points(readings, midnight):
@@ -91,6 +137,13 @@ def index():
     connection = store.connect()
     reading, is_live = current_reading(connection)
     readings, midnight = todays_readings(connection)
+
+    now_local = datetime.now(LOCAL_TZ)
+    buckets, weeks = typical_curve(
+        store.all_readings(connection), now_local.weekday(), now_local.date(), LOCAL_TZ
+    )
+    show_typical = weeks >= MIN_WEEKDAY_INSTANCES
+
     return render_template(
         "index.html",
         reading=reading,
@@ -99,6 +152,9 @@ def index():
         local_time=reading.observed_at.astimezone(LOCAL_TZ) if reading else None,
         points=chart_points(readings, midnight),
         ticks=chart_ticks(),
+        typical_points=curve_points(buckets) if show_typical else "",
+        typical_weeks=weeks,
+        weekday_name=now_local.strftime("%A"),
         sample_count=len(readings),
         width=CHART_WIDTH,
         height=CHART_HEIGHT,

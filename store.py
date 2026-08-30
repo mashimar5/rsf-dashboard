@@ -55,11 +55,27 @@ def latest(connection: sqlite3.Connection) -> Reading | None:
 
 
 def since(connection: sqlite3.Connection, start: datetime) -> list[Reading]:
-    """Every reading at or after start, oldest first"""
+    """Every reading at or after start, oldest first.
+
+    Timestamps are compared as text, so the bound must be normalised to UTC
+    first. A local-time bound like ...T00:00:00-07:00 would compare its "00"
+    hour against stored "+00:00" hours and silently pull in the prior evening.
+    """
     rows = connection.execute(
         "SELECT * FROM readings WHERE observed_at >= ? ORDER BY observed_at",
-        (start.isoformat(),),
+        (start.astimezone(timezone.utc).isoformat(),),
     ).fetchall()
+    return [_to_reading(row) for row in rows]
+
+
+def all_readings(connection: sqlite3.Connection) -> list[Reading]:
+    """Every reading, oldest first.
+
+    Weekday filtering happens in Python because the local weekday of a UTC
+    timestamp depends on DST, which SQLite cannot work out. Fine at a few
+    hundred rows per day; revisit if this ever gets slow.
+    """
+    rows = connection.execute("SELECT * FROM readings ORDER BY observed_at").fetchall()
     return [_to_reading(row) for row in rows]
 
 
