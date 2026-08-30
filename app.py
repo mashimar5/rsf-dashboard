@@ -1,3 +1,4 @@
+import base64
 import os
 import threading
 import time
@@ -16,6 +17,19 @@ LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 CHART_WIDTH = 720
 CHART_HEIGHT = 180
 BUCKET_MINUTES = 30
+# occupancy thresholds -> colour, shared by the bar and the favicon
+LEVELS = ((0.50, "#16a34a"), (0.85, "#ca8a04"), (1.01, "#dc2626"))
+NEUTRAL = "#9ca3af"
+
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="7" fill="{color}"/>'
+    '<g fill="#fff">'
+    '<rect x="5" y="11" width="4.5" height="10" rx="1.6"/>'
+    '<rect x="22.5" y="11" width="4.5" height="10" rx="1.6"/>'
+    '<rect x="9" y="14.4" width="14" height="3.2" rx="1.6"/>'
+    "</g></svg>"
+)
 # Below this many past instances of a weekday, the median is too noisy to show
 MIN_WEEKDAY_INSTANCES = 3
 
@@ -56,6 +70,26 @@ def chart_ticks(step_hours: int = 1):
         }
         for hour in range(0, 25, step_hours)
     ]
+
+
+def level_color(fraction) -> str:
+    """Green below half full, amber to 85%, red above"""
+    if fraction is None:
+        return NEUTRAL
+    for ceiling, colour in LEVELS:
+        if fraction < ceiling:
+            return colour
+    return LEVELS[-1][1]
+
+
+def favicon_uri(colour: str) -> str:
+    """The tab icon, tinted to match how busy it is right now.
+
+    Inlined as a data URI so there is no static file or route to serve, and
+    no second request on page load.
+    """
+    svg = FAVICON_SVG.format(color=colour)
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
 
 
 def chart_y_ticks(step_percent: int = 25):
@@ -161,13 +195,17 @@ def index():
         for r in readings
     ]
 
+    pct = percentage(reading.count, reading.capacity) if reading and reading.capacity else None
+
     return render_template(
         "index.html",
         samples=samples,
         hours_today=hours.todays_hours(now_local.date()),
         reading=reading,
         is_live=is_live,
-        pct=percentage(reading.count, reading.capacity) if reading and reading.capacity else None,
+        pct=pct,
+        level=level_color(pct),
+        favicon=favicon_uri(level_color(pct)),
         local_time=reading.observed_at.astimezone(LOCAL_TZ) if reading else None,
         points=chart_points(readings, midnight),
         ticks=chart_ticks(),

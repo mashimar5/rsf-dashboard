@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="60">
 <title>RSF Weight Room</title>
+<link rel="icon" href="{{ favicon }}">
 <style>
   :root { color-scheme: light dark; --fg: #111; --dim: #666; --line: #d8d8d8; --bg: #fafafa; --card: #fff; }
   @media (prefers-color-scheme: dark) {
@@ -58,7 +59,6 @@
 
   <div class="card">
     {% if reading %}
-      {% set level = '#16a34a' if pct < 0.5 else ('#ca8a04' if pct < 0.85 else '#dc2626') %}
       <div class="count">{{ reading.count }}<small> / {{ reading.capacity }}</small></div>
       <div class="bar"><div style="width: {{ (pct * 100) | round(1) }}%; background: {{ level }};"></div></div>
       <div class="meta">
