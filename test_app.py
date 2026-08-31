@@ -72,10 +72,28 @@ def same_weekday_as_today(weeks_ago, hour):
 
 
 class TypicalLineRenderingTest(unittest.TestCase):
-    def _render_with(self, readings):
+    def _render_with(self, readings, today_samples=5):
+        """Render the page against synthetic history.
+
+        todays_readings is patched too: leaving it to hit the real database
+        made this test pass or fail depending on the time of day, since just
+        after midnight there is nothing recorded for today yet.
+        """
+        now = datetime.now(TZ)
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today = [reading(midnight + timedelta(hours=n), 100) for n in range(today_samples)]
         with patch("store.all_readings", return_value=readings), \
-             patch("app.fetch_reading", return_value=reading(datetime.now(TZ), 100)):
+             patch("app.todays_readings", return_value=(today, midnight)), \
+             patch("app.fetch_reading", return_value=reading(now, 100)):
             return app.app.test_client().get("/").data.decode()
+
+    def test_typical_line_shows_even_before_today_has_data(self):
+        """Just after midnight the typical curve is the only thing worth drawing"""
+        readings = [reading(same_weekday_as_today(week, hour), 100)
+                    for week in (1, 2, 3) for hour in (8, 12, 18)]
+        html = self._render_with(readings, today_samples=0)
+        self.assertIn("Typical", html)
+        self.assertNotIn("Waiting for today", html)
 
     def test_hidden_below_three_instances(self):
         readings = [reading(same_weekday_as_today(week, 8), 100) for week in (1, 2)]

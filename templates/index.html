@@ -87,7 +87,7 @@
   </div>
 
   <div class="card">
-    {% if sample_count > 1 %}
+    {% if sample_count > 1 or typical_points %}
       <div class="chart">
       <div class="plot">
         <div class="ylabels">
@@ -116,8 +116,10 @@
                     stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round"
                     stroke-linecap="round" vector-effect="non-scaling-stroke" />
         {% endif %}
-        <polyline points="{{ points }}" fill="none" stroke="#2563eb" stroke-width="2"
-                  stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+        {% if sample_count > 1 %}
+          <polyline points="{{ points }}" fill="none" stroke="#2563eb" stroke-width="2"
+                    stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+        {% endif %}
       </svg>
         <div class="cursor" id="cursor" hidden></div>
         <div class="dot" id="dot" hidden></div>
@@ -134,15 +136,23 @@
       </div>
       </div>
       <div class="meta legend">
-        <span><i class="today"></i>Today &middot; {{ sample_count }} samples</span>
+        {% if sample_count > 1 %}
+          <span><i class="today"></i>Today &middot; {{ sample_count }} samples</span>
+        {% endif %}
         {% if typical_points %}
           <span><i class="typical"></i>Typical {{ weekday_name }} &middot; {{ typical_weeks }} weeks</span>
         {% endif %}
       </div>
     {% else %}
       <div class="empty">
-        Not enough data to chart yet.<br>
-        Run <code>python collect.py --interval 300</code> to start recording.
+        {% if total_rows %}
+          {# just past midnight: the chart covers today only, and one point is not a line #}
+          Waiting for today&rsquo;s first readings.<br>
+          {{ total_rows }} recorded so far &middot; the chart fills in as the day goes on.
+        {% else %}
+          Nothing recorded yet.<br>
+          Run <code>python collect.py --interval 300</code> to start recording.
+        {% endif %}
       </div>
     {% endif %}
   </div>

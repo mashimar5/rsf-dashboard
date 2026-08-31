@@ -214,6 +214,7 @@ def index():
         typical_weeks=weeks,
         weekday_name=now_local.strftime("%A"),
         sample_count=len(readings),
+        total_rows=store.count_rows(connection),
         width=CHART_WIDTH,
         height=CHART_HEIGHT,
     )
