@@ -40,6 +40,8 @@
        background: var(--card); border: 1px solid var(--line); border-radius: 8px;
        padding: .25rem .4rem; }
   .hours { font-size: .8125rem; color: var(--dim); margin-top: .15rem; }
+  /* after the stat tiles it needs real separation, not a line-gap */
+  .stats + .hours { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--line); }
   .hours b { color: var(--fg); font-weight: 500; }
   .closed { color: #c2410c; }
   svg { width: 100%; height: auto; display: block; }
