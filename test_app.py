@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -69,6 +70,61 @@ def same_weekday_as_today(weeks_ago, hour):
     """A local datetime `weeks_ago` weeks back, so it shares today's weekday"""
     day = datetime.now(TZ).date() - timedelta(weeks=weeks_ago)
     return datetime(day.year, day.month, day.day, hour, tzinfo=TZ)
+
+
+class DaySummaryTest(unittest.TestCase):
+    """A day is mostly closed hours reading zero, so scoping matters a lot."""
+
+    def setUp(self):
+        self.midnight = datetime(2026, 8, 30, tzinfo=TZ)
+
+    def at(self, hour, count, minute=0):
+        return reading(self.midnight.replace(hour=hour, minute=minute), count)
+
+    def hours(self, opens, closes):
+        return SimpleNamespace(opens=opens, closes=closes)
+
+    def test_average_ignores_readings_taken_while_closed(self):
+        readings = [
+            self.at(3, 0), self.at(5, 0),        # closed overnight
+            self.at(9, 75), self.at(15, 75),     # open
+            self.at(23, 0),                      # closed again
+        ]
+        summary = app.day_summary(readings, self.midnight, self.hours(8 * 60, 22 * 60))
+
+        # only the two open-hours readings count: both 75/150
+        self.assertAlmostEqual(summary["average_pct"], 0.5)
+        self.assertTrue(summary["open_only"])
+
+    def test_quietest_is_the_open_hours_low_not_an_overnight_zero(self):
+        readings = [self.at(4, 0), self.at(9, 30), self.at(12, 120), self.at(23, 0)]
+        summary = app.day_summary(readings, self.midnight, self.hours(8 * 60, 22 * 60))
+
+        self.assertEqual(summary["low"].count, 30)
+        self.assertEqual(summary["low_at"].hour, 9)
+        self.assertEqual(summary["peak"].count, 120)
+
+    def test_falls_back_to_the_whole_day_when_hours_are_unknown(self):
+        readings = [self.at(4, 0), self.at(12, 150)]
+        summary = app.day_summary(readings, self.midnight, None)
+
+        self.assertAlmostEqual(summary["average_pct"], 0.5)
+        self.assertFalse(summary["open_only"], "should say so when not scoped")
+
+    def test_closing_after_midnight_does_not_empty_the_window(self):
+        # "12 p.m.-12 a.m." parses as opens=720, closes=0
+        readings = [self.at(14, 60), self.at(20, 90)]
+        summary = app.day_summary(readings, self.midnight, self.hours(720, 0))
+
+        self.assertTrue(summary["open_only"])
+        self.assertEqual(summary["peak"].count, 90)
+
+    def test_a_fully_closed_day_still_reports_rather_than_crashing(self):
+        readings = [self.at(4, 0), self.at(12, 0)]
+        summary = app.day_summary(readings, self.midnight, self.hours(None, None))
+
+        self.assertEqual(summary["average_pct"], 0.0)
+        self.assertFalse(summary["open_only"])
 
 
 class TypicalLineRenderingTest(unittest.TestCase):

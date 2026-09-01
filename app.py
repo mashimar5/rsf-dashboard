@@ -189,17 +189,48 @@ def requested_date(today, earliest_day):
     return min(max(wanted, earliest_day), today)
 
 
-def day_summary(readings):
-    """Peak and average for a day already gone, since "right now" means nothing"""
+def open_window(day_hours):
+    """Opening hours as minutes since local midnight, or None if unknown"""
+    if not day_hours or day_hours.opens is None or day_hours.closes is None:
+        return None
+    opens, closes = day_hours.opens, day_hours.closes
+    if closes <= opens:
+        closes += 24 * 60          # a closing time past midnight
+    return opens, closes
+
+
+def day_summary(readings, midnight, day_hours):
+    """Peak, quietest and average for a day already gone.
+
+    Scoped to opening hours: the gym reads zero all night, and including
+    those readings drags the average toward nothing. Falls back to the whole
+    day only when the hours are unknown, so the number is never empty.
+    """
     usable = [r for r in readings if r.capacity]
     if not usable:
         return None
-    peak = max(usable, key=lambda r: r.count)
+
+    window = open_window(day_hours)
+    during_open = []
+    if window:
+        opens, closes = window
+        for reading in usable:
+            minute = (reading.observed_at.astimezone(LOCAL_TZ) - midnight).total_seconds() / 60
+            if opens <= minute <= closes:
+                during_open.append(reading)
+
+    scoped = during_open or usable
+    peak = max(scoped, key=lambda r: r.count)
+    low = min(scoped, key=lambda r: r.count)
     return {
         "peak": peak,
         "peak_pct": percentage(peak.count, peak.capacity),
         "peak_at": peak.observed_at.astimezone(LOCAL_TZ),
-        "average_pct": mean(percentage(r.count, r.capacity) for r in usable),
+        "low": low,
+        "low_pct": percentage(low.count, low.capacity),
+        "low_at": low.observed_at.astimezone(LOCAL_TZ),
+        "average_pct": mean(percentage(r.count, r.capacity) for r in scoped),
+        "open_only": bool(during_open),
     }
 
 
@@ -234,12 +265,14 @@ def index():
         for r in readings
     ]
 
+    day_hours = hours.todays_hours(viewed)
+
     if is_today:
         reading, is_live = current_reading(connection)
         summary = None
     else:
         reading, is_live = None, False
-        summary = day_summary(readings)
+        summary = day_summary(readings, midnight, day_hours)
 
     # the hero number drives the accent colour: live count today, peak otherwise
     if is_today:
@@ -250,7 +283,7 @@ def index():
     return render_template(
         "index.html",
         samples=samples,
-        hours_today=hours.todays_hours(viewed),
+        hours_today=day_hours,
         reading=reading,
         is_live=is_live,
         is_today=is_today,

@@ -22,6 +22,7 @@
   .bar { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; margin: 1.25rem 0 .5rem; }
   .bar > div { height: 100%; border-radius: 5px; transition: width .3s; }
   .meta { font-size: .8125rem; color: var(--dim); }
+  .meta b { color: var(--fg); font-weight: 500; }
   .stale { color: #c2410c; }
   .nav { display: flex; align-items: center; gap: .5rem; margin: 0 0 1rem; }
   .nav a, .nav span.arrow { display: inline-flex; align-items: center; justify-content: center;
@@ -85,9 +86,15 @@
         <div class="count">{{ summary.peak.count }}<small> / {{ summary.peak.capacity }}</small></div>
         <div class="bar"><div style="width: {{ (summary.peak_pct * 100) | round(1) }}%; background: {{ level }};"></div></div>
         <div class="meta">
-          peaked at {{ (summary.peak_pct * 100) | round(0) | int }}%
-          around {{ summary.peak_at.strftime('%-I:%M %p') }} &middot;
+          peaked at <b>{{ (summary.peak_pct * 100) | round(0) | int }}%</b>
+          around {{ summary.peak_at.strftime('%-I:%M %p') }}
+          &middot;
+          quietest <b>{{ (summary.low_pct * 100) | round(0) | int }}%</b>
+          around {{ summary.low_at.strftime('%-I:%M %p') }}
+        </div>
+        <div class="meta">
           averaged {{ (summary.average_pct * 100) | round(0) | int }}%
+          {% if summary.open_only %}while open{% else %}across the whole day{% endif %}
         </div>
       {% else %}
         <div class="empty">Nothing was recorded on this day.</div>
