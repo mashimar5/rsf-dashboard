@@ -96,13 +96,47 @@ class DaySummaryTest(unittest.TestCase):
         self.assertAlmostEqual(summary["average_pct"], 0.5)
         self.assertTrue(summary["open_only"])
 
-    def test_quietest_is_the_open_hours_low_not_an_overnight_zero(self):
-        readings = [self.at(4, 0), self.at(9, 30), self.at(12, 120), self.at(23, 0)]
+    def _full_day(self, quiet_hour=8, fluke_at=None):
+        """Readings every 15 minutes from 8am to 10pm, busy except one quiet hour"""
+        readings = []
+        for minute in range(8 * 60, 22 * 60 + 1, 15):
+            hour, rest = divmod(minute, 60)
+            count = 15 if hour == quiet_hour else 120
+            if fluke_at is not None and minute == fluke_at:
+                count = 0            # a single dip, not a sustained one
+            readings.append(self.at(hour, count, rest))
+        return readings
+
+    def test_quietest_hour_is_sustained_not_a_single_dip(self):
+        summary = app.day_summary(
+            self._full_day(quiet_hour=8, fluke_at=15 * 60),
+            self.midnight,
+            self.hours(8 * 60, 22 * 60),
+        )
+        quietest = summary["quietest"]
+
+        self.assertEqual(quietest["start"].hour, 8, "the sustained quiet hour should win")
+        self.assertLess(quietest["average_pct"], 0.2)
+        self.assertEqual(summary["peak"].count, 120)
+
+    def test_quietest_window_must_fit_inside_opening_hours(self):
+        summary = app.day_summary(
+            self._full_day(quiet_hour=21),      # quiet in the final open hour
+            self.midnight,
+            self.hours(8 * 60, 21 * 60 + 30),   # closes 9:30pm, mid-quiet-hour
+        )
+        quietest = summary["quietest"]
+
+        # a 9pm-10pm window runs past closing, so it cannot be chosen
+        self.assertLessEqual(
+            (quietest["end"] - self.midnight).total_seconds() / 60, 21 * 60 + 30
+        )
+
+    def test_quietest_ignores_readings_taken_while_closed(self):
+        readings = [self.at(3, 0), self.at(4, 0)] + self._full_day(quiet_hour=8)
         summary = app.day_summary(readings, self.midnight, self.hours(8 * 60, 22 * 60))
 
-        self.assertEqual(summary["low"].count, 30)
-        self.assertEqual(summary["low_at"].hour, 9)
-        self.assertEqual(summary["peak"].count, 120)
+        self.assertGreaterEqual(summary["quietest"]["start"].hour, 8)
 
     def test_falls_back_to_the_whole_day_when_hours_are_unknown(self):
         readings = [self.at(4, 0), self.at(12, 150)]

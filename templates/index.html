@@ -30,6 +30,12 @@
        background: var(--card); color: var(--fg); text-decoration: none; font-size: .9rem; }
   .nav span.arrow { opacity: .3; }
   .nav .day { flex: 1; font-size: .875rem; font-weight: 500; }
+  .nav .todaybtn { width: auto; padding: 0 .7rem; font-size: .8125rem; font-weight: 500; }
+  .stats { display: flex; gap: 1.75rem; flex-wrap: wrap; }
+  .stat { flex: 1 1 8rem; }
+  .stat .label { font-size: .75rem; font-weight: 500; color: var(--dim); margin-bottom: .15rem; }
+  .stat .value { font-size: 2rem; font-weight: 600; line-height: 1.1; letter-spacing: -.02em; }
+  .stat .sub { font-size: .75rem; color: var(--dim); margin-top: .1rem; }
   .nav input[type=date] { font: inherit; font-size: .8125rem; color: var(--fg);
        background: var(--card); border: 1px solid var(--line); border-radius: 8px;
        padding: .25rem .4rem; }
@@ -75,7 +81,8 @@
     {% else %}<span class="arrow" title="No earlier data">&larr;</span>{% endif %}
     {% if next_day %}<a href="/?date={{ next_day }}" title="Next day" rel="next">&rarr;</a>
     {% else %}<span class="arrow" title="Nothing after today">&rarr;</span>{% endif %}
-    <span class="day">{{ full_day_label }}{% if is_today %} &middot; today{% endif %}</span>
+    <span class="day">{{ full_day_label }}</span>
+    {% if not is_today %}<a class="todaybtn" href="/" title="Jump to today">Today</a>{% endif %}
     <input type="date" id="daypick" value="{{ viewed.isoformat() }}"
            min="{{ earliest_day }}" max="{{ today_iso }}">
   </div>
@@ -83,18 +90,25 @@
   <div class="card">
     {% if not is_today %}
       {% if summary %}
-        <div class="count">{{ summary.peak.count }}<small> / {{ summary.peak.capacity }}</small></div>
-        <div class="bar"><div style="width: {{ (summary.peak_pct * 100) | round(1) }}%; background: {{ level }};"></div></div>
-        <div class="meta">
-          peaked at <b>{{ (summary.peak_pct * 100) | round(0) | int }}%</b>
-          around {{ summary.peak_at.strftime('%-I:%M %p') }}
-          &middot;
-          quietest <b>{{ (summary.low_pct * 100) | round(0) | int }}%</b>
-          around {{ summary.low_at.strftime('%-I:%M %p') }}
-        </div>
-        <div class="meta">
-          averaged {{ (summary.average_pct * 100) | round(0) | int }}%
-          {% if summary.open_only %}while open{% else %}across the whole day{% endif %}
+        <div class="stats">
+          <div class="stat">
+            <div class="label">Peak</div>
+            <div class="value">{{ (summary.peak_pct * 100) | round(0) | int }}%</div>
+            <div class="sub">{{ summary.peak.count }} of {{ summary.peak.capacity }} at
+                             {{ summary.peak_at.strftime('%-I:%M %p') }}</div>
+          </div>
+          {% if summary.quietest %}
+            <div class="stat">
+              <div class="label">Quietest Hour</div>
+              <div class="value">{{ (summary.quietest.average_pct * 100) | round(0) | int }}%</div>
+              <div class="sub">{{ summary.quietest.start.strftime('%-I:%M') }}&ndash;{{ summary.quietest.end.strftime('%-I:%M %p') }}</div>
+            </div>
+          {% endif %}
+          <div class="stat">
+            <div class="label">Average</div>
+            <div class="value">{{ (summary.average_pct * 100) | round(0) | int }}%</div>
+            <div class="sub">{% if summary.open_only %}While open{% else %}Whole day{% endif %}</div>
+          </div>
         </div>
       {% else %}
         <div class="empty">Nothing was recorded on this day.</div>
@@ -116,7 +130,7 @@
     {% if hours_today %}
       <div class="hours">
         {% if hours_today.opens is not none %}
-          {% if is_today %}Open today{% else %}Open that day{% endif %} <b>{{ hours_today.text }}</b>
+          {% if is_today %}Open today{% else %}Hours{% endif %} <b>{{ hours_today.text }}</b>
         {% else %}
           <span class="closed">{{ hours_today.text }}</span>
         {% endif %}

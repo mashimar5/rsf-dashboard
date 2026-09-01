@@ -199,6 +199,39 @@ def open_window(day_hours):
     return opens, closes
 
 
+def quietest_window(readings, midnight, window, minutes=60, min_samples=4):
+    """The sustained stretch with the lowest average occupancy.
+
+    A single quiet reading can be a blip; an hour-long dip is something you
+    can plan around. The window must fit entirely inside opening hours, so a
+    half-hour clipped by closing time cannot win by default.
+    """
+    if not readings or not window:
+        return None
+    opens, closes = window
+
+    entries = []
+    for reading in readings:
+        minute = (reading.observed_at.astimezone(LOCAL_TZ) - midnight).total_seconds() / 60
+        entries.append((minute, percentage(reading.count, reading.capacity)))
+
+    best = None
+    for start, _ in entries:
+        if start < opens or start + minutes > closes:
+            continue
+        inside = [pct for minute, pct in entries if start <= minute < start + minutes]
+        if len(inside) < min_samples:
+            continue
+        average = mean(inside)
+        if best is None or average < best["average_pct"]:
+            best = {
+                "average_pct": average,
+                "start": midnight + timedelta(minutes=start),
+                "end": midnight + timedelta(minutes=start + minutes),
+            }
+    return best
+
+
 def day_summary(readings, midnight, day_hours):
     """Peak, quietest and average for a day already gone.
 
@@ -221,14 +254,11 @@ def day_summary(readings, midnight, day_hours):
 
     scoped = during_open or usable
     peak = max(scoped, key=lambda r: r.count)
-    low = min(scoped, key=lambda r: r.count)
     return {
         "peak": peak,
         "peak_pct": percentage(peak.count, peak.capacity),
         "peak_at": peak.observed_at.astimezone(LOCAL_TZ),
-        "low": low,
-        "low_pct": percentage(low.count, low.capacity),
-        "low_at": low.observed_at.astimezone(LOCAL_TZ),
+        "quietest": quietest_window(scoped, midnight, window),
         "average_pct": mean(percentage(r.count, r.capacity) for r in scoped),
         "open_only": bool(during_open),
     }
