@@ -23,6 +23,15 @@
   .bar > div { height: 100%; border-radius: 5px; transition: width .3s; }
   .meta { font-size: .8125rem; color: var(--dim); }
   .stale { color: #c2410c; }
+  .nav { display: flex; align-items: center; gap: .5rem; margin: 0 0 1rem; }
+  .nav a, .nav span.arrow { display: inline-flex; align-items: center; justify-content: center;
+       width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line);
+       background: var(--card); color: var(--fg); text-decoration: none; font-size: .9rem; }
+  .nav span.arrow { opacity: .3; }
+  .nav .day { flex: 1; font-size: .875rem; font-weight: 500; }
+  .nav input[type=date] { font: inherit; font-size: .8125rem; color: var(--fg);
+       background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+       padding: .25rem .4rem; }
   .hours { font-size: .8125rem; color: var(--dim); margin-top: .15rem; }
   .hours b { color: var(--fg); font-weight: 500; }
   .closed { color: #c2410c; }
@@ -60,8 +69,30 @@
 <main>
   <h1>RSF WEIGHT ROOMS</h1>
 
+  <div class="nav">
+    {% if prev_day %}<a href="/?date={{ prev_day }}" title="Previous day" rel="prev">&larr;</a>
+    {% else %}<span class="arrow" title="No earlier data">&larr;</span>{% endif %}
+    {% if next_day %}<a href="/?date={{ next_day }}" title="Next day" rel="next">&rarr;</a>
+    {% else %}<span class="arrow" title="Nothing after today">&rarr;</span>{% endif %}
+    <span class="day">{{ full_day_label }}{% if is_today %} &middot; today{% endif %}</span>
+    <input type="date" id="daypick" value="{{ viewed.isoformat() }}"
+           min="{{ earliest_day }}" max="{{ today_iso }}">
+  </div>
+
   <div class="card">
-    {% if reading %}
+    {% if not is_today %}
+      {% if summary %}
+        <div class="count">{{ summary.peak.count }}<small> / {{ summary.peak.capacity }}</small></div>
+        <div class="bar"><div style="width: {{ (summary.peak_pct * 100) | round(1) }}%; background: {{ level }};"></div></div>
+        <div class="meta">
+          peaked at {{ (summary.peak_pct * 100) | round(0) | int }}%
+          around {{ summary.peak_at.strftime('%-I:%M %p') }} &middot;
+          averaged {{ (summary.average_pct * 100) | round(0) | int }}%
+        </div>
+      {% else %}
+        <div class="empty">Nothing was recorded on this day.</div>
+      {% endif %}
+    {% elif reading %}
       <div class="count">{{ reading.count }}<small> / {{ reading.capacity }}</small></div>
       <div class="bar"><div style="width: {{ (pct * 100) | round(1) }}%; background: {{ level }};"></div></div>
       <div class="meta">
@@ -78,7 +109,7 @@
     {% if hours_today %}
       <div class="hours">
         {% if hours_today.opens is not none %}
-          Open today <b>{{ hours_today.text }}</b>
+          {% if is_today %}Open today{% else %}Open that day{% endif %} <b>{{ hours_today.text }}</b>
         {% else %}
           <span class="closed">{{ hours_today.text }}</span>
         {% endif %}
@@ -137,7 +168,7 @@
       </div>
       <div class="meta legend">
         {% if sample_count > 1 %}
-          <span><i class="today"></i>Today &middot; {{ sample_count }} samples</span>
+          <span><i class="today"></i>{{ day_label }} &middot; {{ sample_count }} samples</span>
         {% endif %}
         {% if typical_points %}
           <span><i class="typical"></i>Typical {{ weekday_name }} &middot; {{ typical_weeks }} weeks</span>
@@ -147,7 +178,7 @@
       <div class="empty">
         {% if total_rows %}
           {# just past midnight: the chart covers today only, and one point is not a line #}
-          Waiting for today&rsquo;s first readings.<br>
+          {% if is_today %}Waiting for today&rsquo;s first readings.{% else %}Nothing recorded on this day.{% endif %}<br>
           {{ total_rows }} recorded so far &middot; the chart fills in as the day goes on.
         {% else %}
           Nothing recorded yet.<br>
@@ -210,5 +241,14 @@
   plot.addEventListener('pointermove', show);
   plot.addEventListener('pointerdown', show);
   plot.addEventListener('pointerleave', hide);
+</script>
+{% endif %}
+
+{% if true %}
+<script>
+  const picker = document.getElementById('daypick');
+  if (picker) picker.addEventListener('change', () => {
+    if (picker.value) window.location = `/?date=${picker.value}`;
+  });
 </script>
 {% endif %}

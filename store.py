@@ -68,6 +68,24 @@ def since(connection: sqlite3.Connection, start: datetime) -> list[Reading]:
     return [_to_reading(row) for row in rows]
 
 
+def between(connection: sqlite3.Connection, start: datetime, end: datetime) -> list[Reading]:
+    """Readings in [start, end), oldest first. Bounds are normalised to UTC
+    for the same reason as since()."""
+    rows = connection.execute(
+        "SELECT * FROM readings WHERE observed_at >= ? AND observed_at < ? ORDER BY observed_at",
+        (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()),
+    ).fetchall()
+    return [_to_reading(row) for row in rows]
+
+
+def earliest(connection: sqlite3.Connection) -> Reading | None:
+    """The very first reading ever recorded, for bounding date navigation"""
+    row = connection.execute(
+        "SELECT * FROM readings ORDER BY observed_at LIMIT 1"
+    ).fetchone()
+    return _to_reading(row) if row else None
+
+
 def all_readings(connection: sqlite3.Connection) -> list[Reading]:
     """Every reading, oldest first.
 

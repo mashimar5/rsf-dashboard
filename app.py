@@ -4,10 +4,10 @@ import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
-from statistics import median
+from statistics import mean, median
 from zoneinfo import ZoneInfo
 
-from flask import Flask, jsonify, render_template, send_from_directory
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 import hours
 import store
@@ -172,15 +172,54 @@ if COLLECT_INTERVAL:
     start_collector(COLLECT_INTERVAL)
 
 
+def local_midnight(day):
+    # datetime.combine is avoided because `time` here is the module, not the class
+    return datetime(day.year, day.month, day.day, tzinfo=LOCAL_TZ)
+
+
+def requested_date(today, earliest_day):
+    """The day to display: ?date=YYYY-MM-DD, clamped to what actually exists"""
+    raw = request.args.get("date")
+    if not raw:
+        return today
+    try:
+        wanted = datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return today
+    return min(max(wanted, earliest_day), today)
+
+
+def day_summary(readings):
+    """Peak and average for a day already gone, since "right now" means nothing"""
+    usable = [r for r in readings if r.capacity]
+    if not usable:
+        return None
+    peak = max(usable, key=lambda r: r.count)
+    return {
+        "peak": peak,
+        "peak_pct": percentage(peak.count, peak.capacity),
+        "peak_at": peak.observed_at.astimezone(LOCAL_TZ),
+        "average_pct": mean(percentage(r.count, r.capacity) for r in usable),
+    }
+
+
 @app.route("/")
 def index():
     connection = store.connect()
     now_local = datetime.now(LOCAL_TZ)
-    reading, is_live = current_reading(connection)
-    readings, midnight = todays_readings(connection)
+    today = now_local.date()
+
+    first = store.earliest(connection)
+    earliest_day = first.observed_at.astimezone(LOCAL_TZ).date() if first else today
+
+    viewed = requested_date(today, earliest_day)
+    is_today = viewed == today
+
+    midnight = local_midnight(viewed)
+    readings = store.between(connection, midnight, midnight + timedelta(days=1))
 
     buckets, weeks = typical_curve(
-        store.all_readings(connection), now_local.weekday(), now_local.date(), LOCAL_TZ
+        store.all_readings(connection), viewed.weekday(), viewed, LOCAL_TZ
     )
     show_typical = weeks >= MIN_WEEKDAY_INSTANCES
 
@@ -195,14 +234,34 @@ def index():
         for r in readings
     ]
 
-    pct = percentage(reading.count, reading.capacity) if reading and reading.capacity else None
+    if is_today:
+        reading, is_live = current_reading(connection)
+        summary = None
+    else:
+        reading, is_live = None, False
+        summary = day_summary(readings)
+
+    # the hero number drives the accent colour: live count today, peak otherwise
+    if is_today:
+        pct = percentage(reading.count, reading.capacity) if reading and reading.capacity else None
+    else:
+        pct = summary["peak_pct"] if summary else None
 
     return render_template(
         "index.html",
         samples=samples,
-        hours_today=hours.todays_hours(now_local.date()),
+        hours_today=hours.todays_hours(viewed),
         reading=reading,
         is_live=is_live,
+        is_today=is_today,
+        summary=summary,
+        viewed=viewed,
+        day_label="Today" if is_today else viewed.strftime("%a, %b %-d"),
+        full_day_label=viewed.strftime("%A, %B %-d"),
+        prev_day=(viewed - timedelta(days=1)).isoformat() if viewed > earliest_day else None,
+        next_day=(viewed + timedelta(days=1)).isoformat() if viewed < today else None,
+        earliest_day=earliest_day.isoformat(),
+        today_iso=today.isoformat(),
         pct=pct,
         level=level_color(pct),
         favicon=favicon_uri(level_color(pct)),
@@ -212,7 +271,7 @@ def index():
         y_ticks=chart_y_ticks(),
         typical_points=curve_points(buckets) if show_typical else "",
         typical_weeks=weeks,
-        weekday_name=now_local.strftime("%A"),
+        weekday_name=viewed.strftime("%A"),
         sample_count=len(readings),
         total_rows=store.count_rows(connection),
         width=CHART_WIDTH,
