@@ -7,7 +7,9 @@ from datetime import datetime, timedelta
 from statistics import mean, median
 from zoneinfo import ZoneInfo
 
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from pathlib import Path
+
+from flask import Flask, jsonify, request, send_from_directory
 
 import hours
 import store
@@ -266,80 +268,18 @@ def day_summary(readings, midnight, day_hours):
 
 @app.route("/")
 def index():
-    connection = store.connect()
-    now_local = datetime.now(LOCAL_TZ)
-    today = now_local.date()
+    """Serve the built React app.
 
-    first = store.earliest(connection)
-    earliest_day = first.observed_at.astimezone(LOCAL_TZ).date() if first else today
-
-    viewed = requested_date(today, earliest_day)
-    is_today = viewed == today
-
-    midnight = local_midnight(viewed)
-    readings = store.between(connection, midnight, midnight + timedelta(days=1))
-
-    buckets, weeks = typical_curve(
-        store.all_readings(connection), viewed.weekday(), viewed, LOCAL_TZ
-    )
-    show_typical = weeks >= MIN_WEEKDAY_INSTANCES
-
-    # [minutes since local midnight, count, capacity] -- compact on purpose,
-    # this is inlined into the page on every load
-    samples = [
-        [
-            int((r.observed_at.astimezone(LOCAL_TZ) - midnight).total_seconds() // 60),
-            r.count,
-            r.capacity,
-        ]
-        for r in readings
-    ]
-
-    day_hours = hours.todays_hours(viewed)
-
-    if is_today:
-        reading, is_live = current_reading(connection)
-        summary = None
-    else:
-        reading, is_live = None, False
-        summary = day_summary(readings, midnight, day_hours)
-
-    # the hero number drives the accent colour: live count today, peak otherwise
-    if is_today:
-        pct = percentage(reading.count, reading.capacity) if reading and reading.capacity else None
-    else:
-        pct = summary["peak_pct"] if summary else None
-
-    return render_template(
-        "index.html",
-        samples=samples,
-        hours_today=day_hours,
-        reading=reading,
-        is_live=is_live,
-        is_today=is_today,
-        summary=summary,
-        viewed=viewed,
-        day_label="Today" if is_today else viewed.strftime("%a, %b %-d"),
-        full_day_label=viewed.strftime("%A, %B %-d"),
-        prev_day=(viewed - timedelta(days=1)).isoformat() if viewed > earliest_day else None,
-        next_day=(viewed + timedelta(days=1)).isoformat() if viewed < today else None,
-        earliest_day=earliest_day.isoformat(),
-        today_iso=today.isoformat(),
-        pct=pct,
-        level=level_color(pct),
-        favicon=favicon_uri(level_color(pct)),
-        local_time=reading.observed_at.astimezone(LOCAL_TZ) if reading else None,
-        points=chart_points(readings, midnight),
-        ticks=chart_ticks(),
-        y_ticks=chart_y_ticks(),
-        typical_points=curve_points(buckets) if show_typical else "",
-        typical_weeks=weeks,
-        weekday_name=viewed.strftime("%A"),
-        sample_count=len(readings),
-        total_rows=store.count_rows(connection),
-        width=CHART_WIDTH,
-        height=CHART_HEIGHT,
-    )
+    Every view lives at / with a ?date= query the client reads, so there is
+    no server-side routing to keep in step with the frontend.
+    """
+    build = Path(app.static_folder) / "app" / "index.html"
+    if not build.exists():
+        return (
+            "Frontend not built. Run: cd frontend && npm install && npm run build",
+            503,
+        )
+    return send_from_directory(build.parent, "index.html")
 
 
 @app.route("/apple-touch-icon.png")
@@ -364,6 +304,100 @@ def api_current():
             "live": is_live,
         }
     )
+
+
+def day_view(connection, viewed, today, earliest_day):
+    """Everything the dashboard needs for one day, as plain JSON-ready data.
+
+    The React client renders from this; nothing about layout or SVG geometry
+    is decided here beyond the minute-of-day the samples fall on.
+    """
+    midnight = local_midnight(viewed)
+    readings = store.between(connection, midnight, midnight + timedelta(days=1))
+    is_today = viewed == today
+    day_hours = hours.todays_hours(viewed)
+
+    def minute_of(reading):
+        return int((reading.observed_at.astimezone(LOCAL_TZ) - midnight).total_seconds() // 60)
+
+    live = None
+    if is_today:
+        reading, is_live = current_reading(connection)
+        if reading:
+            live = {
+                "count": reading.count,
+                "capacity": reading.capacity,
+                "percentage": percentage(reading.count, reading.capacity) if reading.capacity else None,
+                "observedAt": reading.observed_at.astimezone(LOCAL_TZ).isoformat(),
+                "isLive": is_live,
+            }
+
+    summary = None
+    if not is_today:
+        found = day_summary(readings, midnight, day_hours)
+        if found:
+            quietest = found["quietest"]
+            summary = {
+                "peak": {
+                    "count": found["peak"].count,
+                    "capacity": found["peak"].capacity,
+                    "percentage": found["peak_pct"],
+                    "at": found["peak_at"].isoformat(),
+                },
+                "quietest": quietest and {
+                    "percentage": quietest["average_pct"],
+                    "start": quietest["start"].isoformat(),
+                    "end": quietest["end"].isoformat(),
+                },
+                "averagePct": found["average_pct"],
+                "openOnly": found["open_only"],
+            }
+
+    buckets, weeks = typical_curve(
+        store.all_readings(connection), viewed.weekday(), viewed, LOCAL_TZ
+    )
+    typical = None
+    if weeks >= MIN_WEEKDAY_INSTANCES:
+        typical = {
+            "weeks": weeks,
+            "weekday": viewed.strftime("%A"),
+            "points": [
+                [slot * BUCKET_MINUTES + BUCKET_MINUTES // 2, buckets[slot]]
+                for slot in sorted(buckets)
+            ],
+        }
+
+    return {
+        "date": viewed.isoformat(),
+        "isToday": is_today,
+        "label": viewed.strftime("%A, %B %-d"),
+        "shortLabel": "Today" if is_today else viewed.strftime("%a, %b %-d"),
+        "nav": {
+            "prev": (viewed - timedelta(days=1)).isoformat() if viewed > earliest_day else None,
+            "next": (viewed + timedelta(days=1)).isoformat() if viewed < today else None,
+            "earliest": earliest_day.isoformat(),
+            "today": today.isoformat(),
+        },
+        "live": live,
+        "summary": summary,
+        "samples": [[minute_of(r), r.count, r.capacity] for r in readings],
+        "typical": typical,
+        "hours": day_hours and {
+            "text": day_hours.text,
+            "opens": day_hours.opens,
+            "closes": day_hours.closes,
+            "closed": day_hours.opens is None,
+        },
+    }
+
+
+@app.route("/api/day")
+def api_day():
+    connection = store.connect()
+    today = datetime.now(LOCAL_TZ).date()
+    first = store.earliest(connection)
+    earliest_day = first.observed_at.astimezone(LOCAL_TZ).date() if first else today
+    return jsonify(day_view(connection, requested_date(today, earliest_day), today, earliest_day))
 
 
 @app.route("/api/hours")

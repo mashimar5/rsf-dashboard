@@ -3,9 +3,15 @@
 readings.db
 readings.db-wal
 readings.db-shm
+readings-backup.sql
+hours_cache.json
 __pycache__
 *.pyc
 .git
 .gitignore
 .claude
-test_density.py
+test_*.py
+tests
+frontend/node_modules
+frontend/dist
+static/app

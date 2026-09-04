@@ -161,41 +161,55 @@ class DaySummaryTest(unittest.TestCase):
         self.assertFalse(summary["open_only"])
 
 
-class TypicalLineRenderingTest(unittest.TestCase):
-    def _render_with(self, readings, today_samples=5):
-        """Render the page against synthetic history.
+class DayApiTest(unittest.TestCase):
+    """/api/day is the contract the React client renders from."""
 
-        todays_readings is patched too: leaving it to hit the real database
-        made this test pass or fail depending on the time of day, since just
-        after midnight there is nothing recorded for today yet.
-        """
+    def _fetch(self, readings, today_samples=5):
         now = datetime.now(TZ)
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         today = [reading(midnight + timedelta(hours=n), 100) for n in range(today_samples)]
         with patch("store.all_readings", return_value=readings), \
-             patch("app.todays_readings", return_value=(today, midnight)), \
+             patch("store.between", return_value=today), \
+             patch("store.earliest", return_value=reading(midnight - timedelta(days=30), 0)), \
              patch("app.fetch_reading", return_value=reading(now, 100)):
-            return app.app.test_client().get("/").data.decode()
+            return app.app.test_client().get("/api/day").get_json()
 
-    def test_typical_line_shows_even_before_today_has_data(self):
+    def test_typical_absent_below_three_instances(self):
+        readings = [reading(same_weekday_as_today(week, 8), 100) for week in (1, 2)]
+        self.assertIsNone(self._fetch(readings)["typical"])
+
+    def test_typical_present_once_enough_history_exists(self):
+        readings = [reading(same_weekday_as_today(week, hour), 100)
+                    for week in (1, 2, 3) for hour in (8, 12, 18)]
+        typical = self._fetch(readings)["typical"]
+
+        self.assertIsNotNone(typical)
+        self.assertEqual(typical["weeks"], 3)
+        self.assertTrue(all(len(point) == 2 for point in typical["points"]))
+
+    def test_typical_does_not_depend_on_today_having_data(self):
         """Just after midnight the typical curve is the only thing worth drawing"""
         readings = [reading(same_weekday_as_today(week, hour), 100)
                     for week in (1, 2, 3) for hour in (8, 12, 18)]
-        html = self._render_with(readings, today_samples=0)
-        self.assertIn("Typical", html)
-        self.assertNotIn("Waiting for today", html)
+        day = self._fetch(readings, today_samples=0)
 
-    def test_hidden_below_three_instances(self):
-        readings = [reading(same_weekday_as_today(week, 8), 100) for week in (1, 2)]
-        self.assertNotIn("Typical", self._render_with(readings))
+        self.assertIsNotNone(day["typical"])
+        self.assertEqual(day["samples"], [])
 
-    def test_shown_once_enough_history_exists(self):
-        readings = [reading(same_weekday_as_today(week, hour), 100)
-                    for week in (1, 2, 3) for hour in (8, 12, 18)]
-        html = self._render_with(readings)
-        # only assert on the legend, which appears whenever the line is drawn
-        self.assertIn("Typical", html)
-        self.assertIn("3 weeks", html)
+    def test_today_carries_a_live_reading_and_no_summary(self):
+        day = self._fetch([])
+
+        self.assertTrue(day["isToday"])
+        self.assertIsNotNone(day["live"])
+        self.assertIsNone(day["summary"], "summary is for days already over")
+
+    def test_samples_are_minute_count_capacity_triples(self):
+        samples = self._fetch([], today_samples=3)["samples"]
+
+        self.assertEqual(len(samples), 3)
+        for minute, count, capacity in samples:
+            self.assertIsInstance(minute, int)
+            self.assertEqual((count, capacity), (100, 150))
 
 
 if __name__ == "__main__":
