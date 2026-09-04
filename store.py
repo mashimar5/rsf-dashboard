@@ -23,7 +23,11 @@ def connect(db_path=DB_PATH) -> sqlite3.Connection:
     """Open the database, creating the table on first use"""
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
-    # WAL lets the web request read while the collector thread writes
+    # WAL: collect.py can run as its own process (cron) against the same file
+    # the web app is serving from. SQLite locks per connection, not per
+    # process, so this matters in deployment too -- the in-process collector
+    # and each request open separate connections. Without WAL a writer takes
+    # an EXCLUSIVE lock and readers get SQLITE_BUSY.
     connection.execute("PRAGMA journal_mode=WAL")
     connection.executescript(SCHEMA)
     return connection

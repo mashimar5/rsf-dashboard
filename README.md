@@ -154,6 +154,14 @@ copies the built assets in.
 so any local-time bound must be converted first — a local midnight compared
 against `+00:00` values silently pulls in the previous evening.
 
+**SQLite runs in WAL mode** because `collect.py` can run as a separate process
+against the file the web app is serving from. It matters in deployment too:
+SQLite locks per connection rather than per process, so the in-process collector
+and each request contend even under a single worker. At one write every five
+minutes the contention is rare — this is cheap insurance, not a fix for a
+measured problem. WAL still allows only one writer at a time; what it removes is
+readers blocking the writer.
+
 **The page never saves readings.** Collection lives only in the collector, so
 samples land at regular intervals and refreshing the page cannot skew history.
 
