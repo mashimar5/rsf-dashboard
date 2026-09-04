@@ -6,3 +6,4 @@ hours_cache.json
 node_modules/
 static/app/
 CLAUDE.md
+readings-backup.sql
