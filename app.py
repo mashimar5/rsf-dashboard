@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, request, send_from_directory, session, url_for
+from flask import Flask, g, jsonify, redirect, request, send_from_directory, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import evaluate
@@ -48,6 +48,29 @@ app.secret_key = os.environ.get("SECRET_KEY", "")
 # url_for(_external=True) builds http:// URLs. The OAuth redirect_uri would
 # then not match the https one registered with Google.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
+
+def db():
+    """The request's connection, checked out of the pool once and reused."""
+    if "db" not in g:
+        g.db_cm = store.connection()
+        g.db = g.db_cm.__enter__()
+    return g.db
+
+
+@app.teardown_appcontext
+def _return_connection(exception):
+    """Hand the connection back. A pooled connection that is never returned is
+    leaked, unlike a SQLite handle which simply gets garbage collected."""
+    cm = g.pop("db_cm", None)
+    g.pop("db", None)
+    if cm is None:
+        return
+    if exception is None:
+        cm.__exit__(None, None, None)
+    else:
+        # a failed request rolls back rather than committing a partial write
+        cm.__exit__(type(exception), exception, exception.__traceback__)
 
 
 def current_reading(connection):
@@ -151,9 +174,8 @@ def start_collector(interval_seconds: int) -> None:
     def loop():
         while True:
             try:
-                connection = store.connect()
-                store.save(connection, fetch_reading())
-                connection.close()
+                with store.connection() as conn:
+                    store.save(conn, fetch_reading())
             except Exception as error:
                 app.logger.warning("collection failed: %s", error)
             time.sleep(interval_seconds)
@@ -346,7 +368,7 @@ def auth_callback():
     if "refresh_token" not in tokens:
         return "Google did not return a refresh token. Revoke access and try again.", 400
 
-    google_auth.save_refresh_token(store.connect(), email, tokens["refresh_token"])
+    google_auth.save_refresh_token(db(), email, tokens["refresh_token"])
     session["email"] = email
     return redirect("/")
 
@@ -385,7 +407,7 @@ def api_book():
     if not wanted:
         return jsonify({"error": "no start time given"}), 400
 
-    connection = store.connect()
+    connection = db()
     today = datetime.now(LOCAL_TZ).date()
     view = day_view(connection, today, today, today)
     windows = (view.get("suggestions") or {}).get("windows") or []
@@ -440,7 +462,7 @@ def api_feedback():
     if "predictionId" not in payload or "went" not in payload:
         return jsonify({"error": "predictionId and went are required"}), 400
 
-    connection = store.connect()
+    connection = db()
     store.record_feedback(connection, int(payload["predictionId"]), bool(payload["went"]))
     return jsonify({"answered": bool(payload["went"])})
 
@@ -451,7 +473,7 @@ def api_unbook():
     if not email:
         return jsonify({"error": "not signed in"}), 401
 
-    connection = store.connect()
+    connection = db()
     today = datetime.now(LOCAL_TZ).date()
     booking = store.booking_on(connection, today)
     if not booking:
@@ -474,7 +496,7 @@ def api_unbook():
 def auth_logout():
     email = session.pop("email", None)
     if email and request.args.get("forget"):
-        google_auth.forget(store.connect(), email)
+        google_auth.forget(db(), email)
     return jsonify({"signedIn": False})
 
 
@@ -495,7 +517,7 @@ def apple_touch_icon():
 
 @app.route("/api/current")
 def api_current():
-    reading, is_live = current_reading(store.connect())
+    reading, is_live = current_reading(db())
     if reading is None:
         return jsonify({"error": "no reading available"}), 503
     return jsonify(
@@ -524,8 +546,8 @@ def feedback_prompt(connection, viewed, is_today):
         return None
     return {
         "predictionId": booking["prediction_id"],
-        "start": datetime.fromisoformat(booking["starts_at"]).astimezone(LOCAL_TZ).isoformat(),
-        "end": datetime.fromisoformat(booking["ends_at"]).astimezone(LOCAL_TZ).isoformat(),
+        "start": booking["starts_at"].astimezone(LOCAL_TZ).isoformat(),
+        "end": booking["ends_at"].astimezone(LOCAL_TZ).isoformat(),
         "answered": store.feedback_for(connection, booking["prediction_id"]),
     }
 
@@ -577,14 +599,11 @@ def day_view(connection, viewed, today, earliest_day):
                 "openOnly": found["open_only"],
             }
 
-    # Only the rolling window's worth of history can affect the curve, so
-    # bound the query rather than loading every reading ever recorded. A
-    # generous week of slack keeps the coarse UTC bound safe despite the
-    # precise weekday filter being local-time and DST-aware.
-    lookback = midnight - timedelta(weeks=evaluate.WINDOW_INSTANCES + 1)
-    bands, weeks, spread = evaluate.weekday_bands(
-        store.between(connection, lookback, midnight + timedelta(days=1)),
-        viewed, LOCAL_TZ, BUCKET_MINUTES,
+    # The whole curve is one query now: AT TIME ZONE makes the local weekday
+    # and bucket DST-correct, percentile_cont gives a real median, and the
+    # rolling window is a LIMIT. Nothing is loaded into Python to be bucketed.
+    bands, weeks, spread = store.weekday_bands(
+        connection, viewed, str(LOCAL_TZ), BUCKET_MINUTES, evaluate.WINDOW_INSTANCES
     )
     typical = None
     if weeks >= MIN_WEEKDAY_INSTANCES:
@@ -656,8 +675,8 @@ def day_view(connection, viewed, today, earliest_day):
             {
                 # local time, so it is directly comparable with suggestion
                 # windows rather than being the same instant spelled in UTC
-                "start": datetime.fromisoformat(booked["starts_at"]).astimezone(LOCAL_TZ).isoformat(),
-                "end": datetime.fromisoformat(booked["ends_at"]).astimezone(LOCAL_TZ).isoformat(),
+                "start": booked["starts_at"].astimezone(LOCAL_TZ).isoformat(),
+                "end": booked["ends_at"].astimezone(LOCAL_TZ).isoformat(),
                 "predictedPct": booked["predicted_pct"],
             }
             if is_today and (booked := store.booking_on(connection, viewed))
@@ -681,7 +700,7 @@ def day_view(connection, viewed, today, earliest_day):
 
 @app.route("/api/day")
 def api_day():
-    connection = store.connect()
+    connection = db()
     today = datetime.now(LOCAL_TZ).date()
     first = store.earliest(connection)
     earliest_day = first.observed_at.astimezone(LOCAL_TZ).date() if first else today
@@ -738,7 +757,7 @@ def api_history():
 
     hours = request.args.get("hours", default=24, type=int)
     start = datetime.now(LOCAL_TZ) - timedelta(hours=hours)
-    readings = store.since(store.connect(), start)
+    readings = store.since(db(), start)
     return jsonify(
         [
             {

@@ -36,10 +36,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    connection = store.connect()
-
     if args.interval is None:
-        collect_once(connection)
+        with store.connection() as connection:
+            collect_once(connection)
         return 0
 
     print(f"collecting every {args.interval}s, ctrl-c to stop")
@@ -47,7 +46,8 @@ def main() -> int:
         # a long-running collector must survive a blip; one failed poll is not
         # a reason to lose every later one
         try:
-            collect_once(connection)
+            with store.connection() as connection:
+                collect_once(connection)
         except Exception as error:
             print(f"skipped: {error}", file=sys.stderr)
         time.sleep(args.interval)

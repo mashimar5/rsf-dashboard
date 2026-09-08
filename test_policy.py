@@ -20,7 +20,8 @@ def bands(**by_hour):
     for key, value in by_hour.items():
         hour = int(key[1:])
         for slot in (hour * 2, hour * 2 + 1):
-            out[slot] = {"median": value, "low": value - 0.02, "high": value + 0.02}
+            out[slot] = {"median": value, "low": value - 0.02, "high": value + 0.02,
+                     "q1": value - 0.01, "q3": value + 0.01, "n": 4}
     return out
 
 
@@ -216,8 +217,8 @@ class RemainderOfDayTest(unittest.TestCase):
 class ConfidenceTest(unittest.TestCase):
     def test_each_window_carries_the_spread_of_its_own_buckets(self):
         curve = flat(8, 22, 0.5)
-        curve[28] = {"median": 0.5, "low": 0.1, "high": 0.9}     # 2pm is volatile
-        curve[29] = {"median": 0.5, "low": 0.1, "high": 0.9}
+        curve[28] = {"median": 0.5, "low": 0.1, "high": 0.9, "q1": 0.2, "q3": 0.8, "n": 4}     # 2pm is volatile
+        curve[29] = {"median": 0.5, "low": 0.1, "high": 0.9, "q1": 0.2, "q3": 0.8, "n": 4}
         result = policy.suggest(curve, MIDNIGHT, hours(8, 22), BUCKET, limit=99)
         volatile = next(w for w in result.windows if w.start == at(14))
         steady = next(w for w in result.windows if w.start == at(9))

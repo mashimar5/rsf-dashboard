@@ -141,27 +141,30 @@ class ProxyAwarenessTest(unittest.TestCase):
 class DayApiTest(unittest.TestCase):
     """/api/day is the contract the React client renders from."""
 
-    def _fetch(self, readings, today_samples=5):
+    def _fetch(self, weeks, today_samples=5):
+        """Render /api/day with a stubbed curve.
+
+        weekday_bands is a single query now, so stubbing it is both simpler
+        and closer to what the route actually depends on than seeding rows.
+        """
         now = datetime.now(TZ)
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         today = [reading(midnight + timedelta(hours=n), 100) for n in range(today_samples)]
-        # day_view queries twice: today's readings, then the weekday history
-        def between(_conn, start, _end):
-            return today if start == midnight else readings + today
-
-        with patch("store.between", side_effect=between), \
+        bands = {
+            slot: {"median": 0.4, "low": 0.3, "high": 0.5, "q1": 0.35, "q3": 0.45, "n": weeks}
+            for slot in range(16, 44)
+        } if weeks else {}
+        with patch("store.between", return_value=today), \
+             patch("store.weekday_bands", return_value=(bands, weeks, 0.2)), \
              patch("store.earliest", return_value=reading(midnight - timedelta(days=30), 0)), \
              patch("app.fetch_reading", return_value=reading(now, 100)):
             return app.app.test_client().get("/api/day").get_json()
 
     def test_typical_absent_below_three_instances(self):
-        readings = [reading(same_weekday_as_today(week, 8), 100) for week in (1, 2)]
-        self.assertIsNone(self._fetch(readings)["typical"])
+        self.assertIsNone(self._fetch(weeks=2)["typical"])
 
     def test_typical_present_once_enough_history_exists(self):
-        readings = [reading(same_weekday_as_today(week, hour), 100)
-                    for week in (1, 2, 3) for hour in (8, 12, 18)]
-        typical = self._fetch(readings)["typical"]
+        typical = self._fetch(weeks=3)["typical"]
 
         self.assertIsNotNone(typical)
         self.assertEqual(typical["weeks"], 3)
@@ -170,15 +173,13 @@ class DayApiTest(unittest.TestCase):
 
     def test_typical_does_not_depend_on_today_having_data(self):
         """Just after midnight the typical curve is the only thing worth drawing"""
-        readings = [reading(same_weekday_as_today(week, hour), 100)
-                    for week in (1, 2, 3) for hour in (8, 12, 18)]
-        day = self._fetch(readings, today_samples=0)
+        day = self._fetch(weeks=3, today_samples=0)
 
         self.assertIsNotNone(day["typical"])
         self.assertEqual(day["samples"], [])
 
     def test_today_carries_a_live_reading_and_no_summary(self):
-        day = self._fetch([])
+        day = self._fetch(weeks=0)
 
         self.assertTrue(day["isToday"])
         self.assertIsNotNone(day["live"])
@@ -187,19 +188,18 @@ class DayApiTest(unittest.TestCase):
     def test_no_suggestions_below_the_three_instance_gate(self):
         """weekday_bands returns bands from any number of instances, so the
         gate has to be applied here or a single past weekday becomes advice."""
-        readings = [reading(same_weekday_as_today(1, hour), 100) for hour in (8, 12, 18)]
-        day = self._fetch(readings)
+        day = self._fetch(weeks=1)
 
         self.assertEqual(day["suggestions"]["windows"], [])
         self.assertIn("1 so far", day["suggestions"]["refusal"])
 
     def test_suggestions_absent_for_a_past_day(self):
-        day = self._fetch([])
+        day = self._fetch(weeks=0)
         self.assertTrue(day["isToday"])
         self.assertIsNotNone(day["suggestions"])
 
     def test_samples_are_minute_count_capacity_triples(self):
-        samples = self._fetch([], today_samples=3)["samples"]
+        samples = self._fetch(weeks=0, today_samples=3)["samples"]
 
         self.assertEqual(len(samples), 3)
         for minute, count, capacity in samples:

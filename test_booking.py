@@ -1,4 +1,6 @@
 import unittest
+
+import testing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -10,17 +12,11 @@ import store
 TZ = ZoneInfo("America/Los_Angeles")
 
 
-class BookingStoreTest(unittest.TestCase):
+class BookingStoreTest(testing.DatabaseTest):
     def setUp(self):
-        self.path = Path(f"/tmp/rsf-booking-{id(self)}.db")
-        self.connection = store.connect(self.path)
-        self.addCleanup(self.connection.close)
-        self.addCleanup(lambda: [
-            self.path.with_name(self.path.name + s).unlink(missing_ok=True)
-            for s in ("", "-wal", "-shm")
-        ])
+        super().setUp()
         self.day = date(2026, 9, 8)
-        self.start = datetime(2026, 9, 8, 14, tzinfo=TZ)
+        self.start = datetime(self.day.year, self.day.month, self.day.day, 14, tzinfo=TZ)
 
     def save(self, event_id, hour=14):
         start = self.start.replace(hour=hour)
@@ -131,13 +127,11 @@ class BookingEndpointTest(unittest.TestCase):
         saved.assert_not_called()
 
 
-class CalendarIdTest(unittest.TestCase):
+class CalendarIdTest(testing.DatabaseTest):
     def test_the_calendar_is_created_once_and_reused(self):
-        connection = store.connect(Path(f"/tmp/rsf-cal-{id(self)}.db"))
-        self.addCleanup(connection.close)
         with patch.object(app.google_auth, "create_calendar", return_value="cal-new") as create:
-            first = app.app_calendar_id("ya29", connection)
-            second = app.app_calendar_id("ya29", connection)
+            first = app.app_calendar_id("ya29", self.connection)
+            second = app.app_calendar_id("ya29", self.connection)
 
         self.assertEqual((first, second), ("cal-new", "cal-new"))
         create.assert_called_once()
@@ -147,19 +141,13 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class PredictionLoggingTest(unittest.TestCase):
+class PredictionLoggingTest(testing.DatabaseTest):
     """Suggestions are recorded as shown, once, however often the page renders."""
 
     def setUp(self):
-        self.path = Path(f"/tmp/rsf-predlog-{id(self)}.db")
-        self.connection = store.connect(self.path)
-        self.addCleanup(self.connection.close)
-        self.addCleanup(lambda: [
-            self.path.with_name(self.path.name + s).unlink(missing_ok=True)
-            for s in ("", "-wal", "-shm")
-        ])
+        super().setUp()
         self.day = date(2026, 9, 8)
-        self.start = datetime(2026, 9, 8, 14, tzinfo=TZ)
+        self.start = datetime(self.day.year, self.day.month, self.day.day, 14, tzinfo=TZ)
 
     def log(self, hour=14, pct=0.35):
         start = self.start.replace(hour=hour)
@@ -171,7 +159,7 @@ class PredictionLoggingTest(unittest.TestCase):
 
         self.assertEqual(first, second, "same row id returned both times")
         self.assertEqual(
-            self.connection.execute("SELECT COUNT(*) FROM predictions").fetchone()[0], 1
+            self.connection.execute("SELECT COUNT(*) AS n FROM predictions").fetchone()["n"], 1
         )
 
     def test_different_windows_on_a_day_are_separate_rows(self):
@@ -179,13 +167,13 @@ class PredictionLoggingTest(unittest.TestCase):
         self.log(hour=14)
 
         self.assertEqual(
-            self.connection.execute("SELECT COUNT(*) FROM predictions").fetchone()[0], 2
+            self.connection.execute("SELECT COUNT(*) AS n FROM predictions").fetchone()["n"], 2
         )
 
     def test_confidence_at_the_time_is_kept(self):
         row_id = self.log(pct=0.42)
         row = self.connection.execute(
-            "SELECT predicted_pct, basis_weeks, basis_spread FROM predictions WHERE id = ?",
+            "SELECT predicted_pct, basis_weeks, basis_spread FROM predictions WHERE id = %s",
             (row_id,),
         ).fetchone()
 
@@ -207,17 +195,11 @@ class PredictionLoggingTest(unittest.TestCase):
         self.assertIs(store.feedback_for(self.connection, row_id), True)
 
 
-class FeedbackPromptTest(unittest.TestCase):
+class FeedbackPromptTest(testing.DatabaseTest):
     def setUp(self):
-        self.path = Path(f"/tmp/rsf-prompt-{id(self)}.db")
-        self.connection = store.connect(self.path)
-        self.addCleanup(self.connection.close)
-        self.addCleanup(lambda: [
-            self.path.with_name(self.path.name + s).unlink(missing_ok=True)
-            for s in ("", "-wal", "-shm")
-        ])
+        super().setUp()
         self.day = date(2026, 9, 7)
-        self.start = datetime(2026, 9, 7, 14, tzinfo=TZ)
+        self.start = datetime(self.day.year, self.day.month, self.day.day, 14, tzinfo=TZ)
 
     def book(self, with_prediction=True):
         prediction_id = None

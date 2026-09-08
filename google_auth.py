@@ -13,7 +13,6 @@ app knows which account signed in, for the allowlist.
 import json
 import os
 import secrets
-import sqlite3
 from base64 import urlsafe_b64decode
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -37,15 +36,6 @@ SCOPES = (
     " https://www.googleapis.com/auth/calendar.app.created"
 )
 TIMEOUT = 15
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS google_tokens (
-    email TEXT PRIMARY KEY,
-    refresh_token TEXT NOT NULL,
-    linked_at TEXT NOT NULL
-);
-"""
-
 
 class NeedsReauth(Exception):
     """The refresh token no longer works -- revoked, or six months idle.
@@ -147,39 +137,32 @@ def email_from_id_token(id_token: str) -> str | None:
         return None
 
 
-def save_refresh_token(connection: sqlite3.Connection, email: str, refresh_token: str) -> None:
-    connection.executescript(SCHEMA)
+def save_refresh_token(connection, email: str, refresh_token: str) -> None:
     connection.execute(
         """INSERT INTO google_tokens (email, refresh_token, linked_at)
-           VALUES (?, ?, ?)
+           VALUES (%s, %s, NOW())
            ON CONFLICT (email) DO UPDATE SET
-               refresh_token = excluded.refresh_token, linked_at = excluded.linked_at""",
-        (
-            email.lower(),
-            _cipher().encrypt(refresh_token.encode()).decode(),
-            datetime.now(timezone.utc).isoformat(),
-        ),
+               refresh_token = EXCLUDED.refresh_token, linked_at = EXCLUDED.linked_at""",
+        (email.lower(), _cipher().encrypt(refresh_token.encode()).decode()),
     )
     connection.commit()
 
 
-def load_refresh_token(connection: sqlite3.Connection, email: str) -> str | None:
-    connection.executescript(SCHEMA)
+def load_refresh_token(connection, email: str) -> str | None:
     row = connection.execute(
-        "SELECT refresh_token FROM google_tokens WHERE email = ?", (email.lower(),)
+        "SELECT refresh_token FROM google_tokens WHERE email = %s", (email.lower(),)
     ).fetchone()
     if not row:
         return None
     try:
-        return _cipher().decrypt(row[0].encode()).decode()
+        return _cipher().decrypt(row["refresh_token"].encode()).decode()
     except InvalidToken:
         # the encryption key changed; the stored token is unrecoverable
         return None
 
 
-def forget(connection: sqlite3.Connection, email: str) -> None:
-    connection.executescript(SCHEMA)
-    connection.execute("DELETE FROM google_tokens WHERE email = ?", (email.lower(),))
+def forget(connection, email: str) -> None:
+    connection.execute("DELETE FROM google_tokens WHERE email = %s", (email.lower(),))
     connection.commit()
 
 

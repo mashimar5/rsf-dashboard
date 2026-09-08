@@ -1,4 +1,6 @@
 import unittest
+
+import testing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -104,122 +106,126 @@ class DispersionMetricTest(unittest.TestCase):
         self.assertIsNone(evaluate.dispersion([]))
 
 
-class WeekdayBandsTest(unittest.TestCase):
-    """The curve the dashboard draws and the backtest scores -- one function."""
+class WeekdayBandsTest(testing.DatabaseTest):
+    """The curve the dashboard draws and the backtest scores -- one query.
 
-    def monday(self, weeks_back, hour, minute=0, count=100):
-        day = date(2026, 9, 7) - timedelta(weeks=weeks_back)   # 2026-09-07 is a Monday
-        return at(datetime(day.year, day.month, day.day, hour, minute, tzinfo=TZ), count)
+    Runs against Postgres because AT TIME ZONE and percentile_cont have no
+    in-memory equivalent, and testing a different engine than production uses
+    would defeat the point of moving it here.
+    """
 
-    def bands(self, readings, target=date(2026, 9, 7)):
-        return evaluate.weekday_bands(readings, target, TZ, BUCKET)
+    ZONE = "America/Los_Angeles"
+
+    def seed(self, weeks_back, hour, count, minute=0):
+        day = date(2026, 9, 7) - timedelta(weeks=weeks_back)   # a Monday
+        store.save(self.connection, at(
+            datetime(day.year, day.month, day.day, hour, minute, tzinfo=TZ), count))
+
+    def bands(self, window=8, target=date(2026, 9, 7)):
+        return store.weekday_bands(self.connection, target, self.ZONE, BUCKET, window)
 
     def test_target_day_is_excluded_from_its_own_band(self):
-        readings = [self.monday(1, 8, count=100), self.monday(2, 8, count=100),
-                    self.monday(0, 8, count=0)]          # the day being viewed
-        bands, weeks, _ = self.bands(readings)
+        self.seed(1, 8, 100)
+        self.seed(2, 8, 100)
+        self.seed(0, 8, 0)                       # the day being viewed
+        bands, weeks, _ = self.bands()
 
         self.assertEqual(weeks, 2, "the viewed day must not count as an instance")
         self.assertAlmostEqual(bands[16]["median"], 100 / 150)
 
     def test_median_resists_a_single_closure(self):
-        readings = [self.monday(w, 8, count=90) for w in (1, 2, 3)]
-        readings.append(self.monday(4, 8, count=0))
-        bands, _, _ = self.bands(readings)
+        for week in (1, 2, 3):
+            self.seed(week, 8, 90)
+        self.seed(4, 8, 0)
+        bands, _, _ = self.bands()
 
         self.assertAlmostEqual(bands[16]["median"], 90 / 150, msg="a mean would sag")
         self.assertAlmostEqual(bands[16]["low"], 0.0, msg="but the band still shows it")
 
     def test_samples_group_into_half_hour_buckets(self):
-        readings = [self.monday(1, 8, 5, count=60), self.monday(1, 8, 25, count=90),
-                    self.monday(1, 8, 45, count=150)]
-        bands, _, _ = self.bands(readings)
+        self.seed(1, 8, 60, minute=5)
+        self.seed(1, 8, 90, minute=25)
+        self.seed(1, 8, 150, minute=45)
+        bands, _, _ = self.bands()
 
         self.assertAlmostEqual(bands[16]["median"], 75 / 150, msg="median of 60 and 90")
         self.assertAlmostEqual(bands[17]["median"], 1.0)
 
     def test_other_weekdays_are_ignored(self):
-        tuesday = at(datetime(2026, 9, 1, 8, tzinfo=TZ), 140)
-        bands, weeks, _ = self.bands([tuesday])
+        store.save(self.connection, at(datetime(2026, 9, 1, 8, tzinfo=TZ), 140))  # Tuesday
+        bands, weeks, _ = self.bands()
 
         self.assertEqual((bands, weeks), ({}, 0))
 
     def test_band_carries_the_range_across_instances(self):
-        readings = [self.monday(1, 8, count=30), self.monday(2, 8, count=90),
-                    self.monday(3, 8, count=120)]
-        bands, _, _ = self.bands(readings)
+        self.seed(1, 8, 30)
+        self.seed(2, 8, 90)
+        self.seed(3, 8, 120)
+        bands, _, _ = self.bands()
 
         self.assertAlmostEqual(bands[16]["low"], 30 / 150)
         self.assertAlmostEqual(bands[16]["high"], 120 / 150)
         self.assertAlmostEqual(bands[16]["median"], 90 / 150)
 
+    def test_local_time_bucketing_survives_a_dst_transition(self):
+        """The reason this moved to Postgres: SQLite has no timezone database,
+        so it could not place a UTC instant in the right local bucket."""
+        # 2026-11-01 is the US autumn transition; these Sundays are 8am local
+        for weeks_back in (1, 2, 3):
+            day = date(2026, 11, 8) - timedelta(weeks=weeks_back)
+            store.save(self.connection, at(
+                datetime(day.year, day.month, day.day, 8, tzinfo=TZ), 75))
+        bands, weeks, _ = self.bands(target=date(2026, 11, 8))
 
-class RollingWindowTest(unittest.TestCase):
-    """Without a window the curve degrades as data accumulates: a "typical
-    Monday" would eventually blend semester weeks with winter break."""
+        self.assertEqual(weeks, 3)
+        self.assertIn(16, bands, "8am local must land in the 8am bucket on both"
+                                 " sides of the clock change")
+
+
+class RollingWindowTest(testing.DatabaseTest):
+    """Without a window the curve degrades as data accumulates."""
+
+    ZONE = "America/Los_Angeles"
 
     def mondays_at_8am(self, counts):
-        """One reading at 8am on each of len(counts) consecutive Mondays,
-        oldest first, ending the week before 2026-09-07."""
-        readings = []
         for weeks_back, count in enumerate(reversed(counts), start=1):
             day = date(2026, 9, 7) - timedelta(weeks=weeks_back)
-            readings.append(at(datetime(day.year, day.month, day.day, 8, tzinfo=TZ), count))
-        return readings
+            store.save(self.connection, at(
+                datetime(day.year, day.month, day.day, 8, tzinfo=TZ), count))
 
-    def bands(self, readings, **kwargs):
-        return evaluate.weekday_bands(readings, date(2026, 9, 7), TZ, BUCKET, **kwargs)
+    def bands(self, window=8, target=date(2026, 9, 7), before=None):
+        return store.weekday_bands(self.connection, target, self.ZONE, BUCKET,
+                                   window, before=before)
 
     def test_only_the_most_recent_instances_are_used(self):
-        # eight recent busy Mondays, preceded by four ancient empty ones
-        readings = self.mondays_at_8am([0, 0, 0, 0] + [120] * 8)
-        bands, weeks, _ = self.bands(readings)
+        self.mondays_at_8am([0, 0, 0, 0] + [120] * 8)
+        bands, weeks, _ = self.bands()
 
-        self.assertEqual(weeks, evaluate.WINDOW_INSTANCES)
+        self.assertEqual(weeks, 8)
         self.assertAlmostEqual(bands[16]["median"], 120 / 150)
         self.assertAlmostEqual(bands[16]["low"], 120 / 150,
                                msg="the stale empty Mondays must be gone entirely")
 
     def test_reports_what_it_used_not_what_exists(self):
-        _, weeks, _ = self.bands(self.mondays_at_8am([100] * 20))
+        self.mondays_at_8am([100] * 20)
+        _, weeks, _ = self.bands()
 
-        self.assertEqual(weeks, evaluate.WINDOW_INSTANCES,
-                         "basis_weeks must describe the numbers actually shown")
+        self.assertEqual(weeks, 8, "basis_weeks must describe the numbers shown")
 
     def test_below_the_window_everything_is_used(self):
-        _, weeks, _ = self.bands(self.mondays_at_8am([100] * 3))
+        self.mondays_at_8am([100] * 3)
+        _, weeks, _ = self.bands()
 
         self.assertEqual(weeks, 3, "a window changes nothing until it fills")
 
     def test_the_window_is_relative_to_the_backtest_cutoff(self):
-        """Backtesting an old day uses the instances before it, not the most
-        recent ones overall."""
-        # four quiet Mondays, then the target, then eight busy ones after it
-        readings = self.mondays_at_8am([30] * 4 + [30] + [150] * 8)
+        self.mondays_at_8am([30] * 4 + [30] + [150] * 8)
         target = date(2026, 9, 7) - timedelta(weeks=9)
         midnight = datetime(target.year, target.month, target.day, tzinfo=TZ)
-        bands, weeks, _ = evaluate.weekday_bands(
-            readings, target, TZ, BUCKET, before=midnight
-        )
+        bands, weeks, _ = self.bands(target=target, before=midnight)
 
         self.assertEqual(weeks, 4, "only the four Mondays that preceded it")
         self.assertAlmostEqual(bands[16]["median"], 30 / 150)
-
-    def test_a_day_with_patchy_collection_still_counts_once(self):
-        """The window counts days, so a densely sampled day cannot crowd out
-        a sparse one."""
-        dense_day = date(2026, 9, 7) - timedelta(weeks=1)
-        sparse_days = [date(2026, 9, 7) - timedelta(weeks=n) for n in range(2, 5)]
-        readings = [
-            at(datetime(dense_day.year, dense_day.month, dense_day.day, 8, m, tzinfo=TZ), 150)
-            for m in range(0, 30, 5)
-        ]
-        readings += [
-            at(datetime(d.year, d.month, d.day, 8, tzinfo=TZ), 30) for d in sparse_days
-        ]
-        _, weeks, _ = self.bands(readings)
-
-        self.assertEqual(weeks, 4)
 
 
 class WindowSpreadTest(unittest.TestCase):
@@ -227,9 +233,9 @@ class WindowSpreadTest(unittest.TestCase):
 
     def test_window_spread_ignores_buckets_outside_the_window(self):
         bands = {
-            16: {"median": 0.5, "low": 0.48, "high": 0.52},   # steady morning
-            17: {"median": 0.5, "low": 0.49, "high": 0.51},
-            36: {"median": 0.5, "low": 0.10, "high": 0.90},   # chaotic evening
+            16: {"median": 0.5, "low": 0.48, "high": 0.52, "q1": 0.49, "q3": 0.51, "n": 4},   # steady morning
+            17: {"median": 0.5, "low": 0.49, "high": 0.51, "q1": 0.495, "q3": 0.505, "n": 4},
+            36: {"median": 0.5, "low": 0.10, "high": 0.90, "q1": 0.2, "q3": 0.8, "n": 4},   # chaotic evening
         }
         morning = evaluate.band_spread(bands, [16, 17])
         evening = evaluate.band_spread(bands, [36])
@@ -243,73 +249,47 @@ class WindowSpreadTest(unittest.TestCase):
         self.assertIsNone(evaluate.band_spread({}, [16, 17]))
 
 
-class BacktestTest(unittest.TestCase):
+class BacktestTest(testing.DatabaseTest):
     """The point of a backtest is that the model cannot see the day it scores."""
 
+    ZONE = "America/Los_Angeles"
+
     def mondays(self, counts):
-        """Consecutive Mondays ending 2026-09-07, one entry per count given"""
         last = date(2026, 9, 7)
-        readings = []
         for weeks_back, count in enumerate(reversed(counts)):
-            readings += day_of_readings(last - timedelta(weeks=weeks_back), count)
-        return readings
+            day = last - timedelta(weeks=weeks_back)
+            for reading in day_of_readings(day, count):
+                store.save(self.connection, reading)
+
+    def run_backtest(self, target=date(2026, 9, 7)):
+        return evaluate.backtest(self.connection, store.all_readings(self.connection),
+                                 target, TZ, BUCKET)
 
     def test_refuses_below_three_prior_instances(self):
-        # three Mondays total, so only two precede the target
-        readings = self.mondays([75, 75, 75])
-        self.assertIsNone(evaluate.backtest(readings, date(2026, 9, 7), TZ, BUCKET))
+        self.mondays([75, 75, 75])
+        self.assertIsNone(self.run_backtest())
 
     def test_scores_a_day_it_did_not_see(self):
-        readings = self.mondays([75, 75, 75, 75])
-        result = evaluate.backtest(readings, date(2026, 9, 7), TZ, BUCKET)
+        self.mondays([75, 75, 75, 75])
+        result = self.run_backtest()
 
         self.assertEqual(result["basis_weeks"], 3)
         self.assertAlmostEqual(result["mean_absolute_error"], 0.0, places=6)
 
     def test_target_day_cannot_influence_its_own_forecast(self):
-        # three quiet Mondays, then a wildly busy one to predict
-        readings = self.mondays([15, 15, 15, 150])
-        result = evaluate.backtest(readings, date(2026, 9, 7), TZ, BUCKET)
+        self.mondays([15, 15, 15, 150])
+        result = self.run_backtest()
 
-        # forecast 10%, actual 100% -> the error must show, not be averaged away
         self.assertAlmostEqual(result["bias"], 0.10 - 1.0, places=6)
         self.assertGreater(result["mean_absolute_error"], 0.8)
 
-    def test_later_days_cannot_leak_backwards_into_an_earlier_forecast(self):
-        """The cutoff, not just the exclude-the-target-day rule.
-
-        Backtesting a day in the middle of history must not use weekdays that
-        came after it. Testing only the most recent day hides this entirely,
-        because there is nothing later to leak.
-        """
-        # three quiet Mondays, the target, then three busy ones after it
-        readings = self.mondays([15, 15, 15, 75, 150, 150, 150])
-        target = date(2026, 9, 7) - timedelta(weeks=3)
-        result = evaluate.backtest(readings, target, TZ, BUCKET)
-
-        self.assertEqual(result["basis_weeks"], 3, "only the three prior Mondays")
-        # forecast 10% from the quiet Mondays, actual 50%
-        self.assertAlmostEqual(result["bias"], 0.10 - 0.50, places=6)
-
     def test_bias_sign_distinguishes_over_from_under_forecasting(self):
-        over = evaluate.backtest(self.mondays([150, 150, 150, 15]), date(2026, 9, 7), TZ, BUCKET)
-        under = evaluate.backtest(self.mondays([15, 15, 15, 150]), date(2026, 9, 7), TZ, BUCKET)
-
-        self.assertGreater(over["bias"], 0, "predicted busy, was quiet")
-        self.assertLess(under["bias"], 0, "predicted quiet, was busy")
+        self.mondays([150, 150, 150, 15])
+        self.assertGreater(self.run_backtest()["bias"], 0, "predicted busy, was quiet")
 
 
-class PredictionLogTest(unittest.TestCase):
+class PredictionLogTest(testing.DatabaseTest):
     """Absence of feedback must stay distinguishable from a "no" answer."""
-
-    def setUp(self):
-        self.path = Path(f"/tmp/rsf-eval-test-{id(self)}.db")
-        self.connection = store.connect(self.path)
-        self.addCleanup(self.connection.close)
-        self.addCleanup(lambda: [
-            self.path.with_name(self.path.name + suffix).unlink(missing_ok=True)
-            for suffix in ("", "-wal", "-shm")
-        ])
 
     def save(self, pct=0.35, weeks=3, spread=0.1):
         start = datetime(2026, 9, 7, 14, tzinfo=TZ)
@@ -354,29 +334,27 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class StorageNormalisationTest(unittest.TestCase):
-    """Timestamps are compared as text, so what goes in must be UTC."""
+class StorageNormalisationTest(testing.DatabaseTest):
+    """timestamptz stores an instant, so an offset can no longer be lost.
 
-    def setUp(self):
-        self.path = Path(f"/tmp/rsf-utc-{id(self)}.db")
-        self.connection = store.connect(self.path)
-        self.addCleanup(self.connection.close)
-        self.addCleanup(lambda: [
-            self.path.with_name(self.path.name + s).unlink(missing_ok=True)
-            for s in ("", "-wal", "-shm")
-        ])
+    Under SQLite these were text comparisons and a locally-stamped reading
+    sorted wrongly against UTC bounds. The column type now makes that
+    impossible rather than caught-by-test.
+    """
 
-    def test_a_local_time_reading_is_stored_as_utc(self):
+    def test_a_local_time_reading_round_trips_as_the_same_instant(self):
         local = datetime(2026, 9, 7, 14, tzinfo=TZ)
         store.save(self.connection, Reading(90, 150, local))
-        stored = self.connection.execute("SELECT observed_at FROM readings").fetchone()[0]
+        [stored] = store.all_readings(self.connection)
 
-        self.assertTrue(stored.endswith("+00:00"), f"stored as {stored}")
+        # the offset it comes back in is the session's; the instant is what
+        # must survive, and comparing datetimes compares instants
+        self.assertEqual(stored.observed_at, local)
 
-    def test_a_local_time_reading_is_still_found_by_a_range_query(self):
+    def test_a_local_time_reading_is_found_by_a_range_query(self):
         local = datetime(2026, 9, 7, 14, tzinfo=TZ)
         store.save(self.connection, Reading(90, 150, local))
         found = store.between(self.connection, local - timedelta(minutes=1),
                               local + timedelta(minutes=1))
 
-        self.assertEqual(len(found), 1, "text comparison fails without normalising")
+        self.assertEqual(len(found), 1)

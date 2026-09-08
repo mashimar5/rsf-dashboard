@@ -9,6 +9,24 @@ jobs:
   backend:
     name: Python tests
     runs-on: ubuntu-latest
+
+    # The suite needs a real Postgres: AT TIME ZONE and percentile_cont have
+    # no in-memory substitute, and testing against a different engine than
+    # production runs would defeat the point of moving the curve into SQL.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rsf_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+
+    env:
+      RSF_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rsf_test
+
     steps:
       - uses: actions/checkout@v4
 

@@ -71,58 +71,22 @@ def score(readings, predicted_pct: float, start: datetime, end: datetime):
     return Score(predicted_pct=predicted_pct, actual_pct=actual, samples=inside)
 
 
-def weekday_bands(readings, target: date, tz, bucket_minutes: int, before=None,
-                  window: int = WINDOW_INSTANCES):
-    """What prior instances of `target`'s weekday looked like, per time bucket.
+def band_dispersion(band) -> float | None:
+    """One bucket's disagreement: range below IQR_MIN_INSTANCES, IQR above.
 
-    The single source of truth for the typical-weekday curve: the dashboard
-    draws it and the backtest scores it, so they cannot drift apart.
-
-    Each bucket carries a median and the range across instances. A count alone
-    is a crude confidence signal -- three weekdays that agree closely and three
-    that range 20%-70% both pass a "three or more" gate, and only the range
-    distinguishes them.
-
-    `before` cuts off history so a backtest cannot see past the day it is
-    predicting. Omit it for display, where all history except the viewed day
-    is fair game.
-
-    Only the most recent `window` instances are used -- see WINDOW_INSTANCES.
-    The count returned is how many were actually used, not how many exist, so
-    it stays an honest description of what backed the numbers.
-
-    Returns (bands, instance_count, day_level_spread).
+    See dispersion() for why the metric has to change with sample count.
     """
-    # First pass: which days qualify at all. The window is applied to days,
-    # not readings, so a day with patchy collection still counts as one
-    # instance rather than being crowded out by denser ones.
-    qualifying: list[tuple[datetime, float]] = []
-    days: set[date] = set()
-    for reading in readings:
-        if not reading.capacity:
-            continue
-        if before is not None and reading.observed_at >= before:
-            continue
-        local = reading.observed_at.astimezone(tz)
-        if local.weekday() != target.weekday() or local.date() == target:
-            continue
-        days.add(local.date())
-        qualifying.append((local, percentage(reading.count, reading.capacity)))
+    if not band or band.get("n", 0) < 2:
+        return None
+    if band["n"] < IQR_MIN_INSTANCES:
+        return band["high"] - band["low"]
+    return band["q3"] - band["q1"]
 
-    kept = set(sorted(days, reverse=True)[:window])
 
-    buckets: dict[int, list[float]] = {}
-    for local, fraction in qualifying:
-        if local.date() not in kept:
-            continue
-        slot = (local.hour * 60 + local.minute) // bucket_minutes
-        buckets.setdefault(slot, []).append(fraction)
-
-    bands = {
-        slot: {"median": median(values), "low": min(values), "high": max(values)}
-        for slot, values in buckets.items()
-    }
-    return bands, len(kept), spread_of(buckets)
+def spread_of_bands(bands) -> float | None:
+    """Mean dispersion across buckets."""
+    spreads = [d for band in bands.values() if (d := band_dispersion(band)) is not None]
+    return mean(spreads) if spreads else None
 
 
 def band_spread(bands, slots) -> float | None:
@@ -132,8 +96,7 @@ def band_spread(bands, slots) -> float | None:
     9am and chaotic at 6pm, and an average across the whole day would either
     block good windows or wave through bad ones.
     """
-    widths = [bands[slot]["high"] - bands[slot]["low"] for slot in slots if slot in bands]
-    return mean(widths) if widths else None
+    return spread_of_bands({slot: bands[slot] for slot in slots if slot in bands})
 
 
 def dispersion(values: list[float]):
@@ -169,15 +132,17 @@ def spread_of(buckets: dict[int, list[float]]):
     return mean(spreads) if spreads else None
 
 
-def backtest(readings, target: date, tz, bucket_minutes: int, window_minutes: int = 60):
+def backtest(conn, readings, target: date, tz, bucket_minutes: int, window_minutes: int = 60):
     """Score the curve against one day it never saw.
 
     Returns None when there is not enough prior history, mirroring the rule
     that the curve stays hidden below three prior instances.
     """
+    import store   # imported lazily: store calls back into this module
+
     midnight = datetime(target.year, target.month, target.day, tzinfo=tz)
-    bands, weeks, spread = weekday_bands(
-        readings, target, tz, bucket_minutes, before=midnight
+    bands, weeks, spread = store.weekday_bands(
+        conn, target, str(tz), bucket_minutes, WINDOW_INSTANCES, before=midnight
     )
     if weeks < 3 or not bands:
         return None

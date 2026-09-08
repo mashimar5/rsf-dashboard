@@ -2,6 +2,8 @@ import json
 import os
 import sqlite3
 import unittest
+
+import testing
 from base64 import urlsafe_b64encode
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
@@ -52,11 +54,7 @@ class AuthorizeUrlTest(unittest.TestCase):
         self.assertEqual(query["state"], ["st"])
 
 
-class TokenStorageTest(unittest.TestCase):
-    def setUp(self):
-        self.connection = sqlite3.connect(":memory:")
-        self.addCleanup(self.connection.close)
-
+class TokenStorageTest(testing.DatabaseTest):
     @env()
     def test_round_trips_a_refresh_token(self):
         google_auth.save_refresh_token(self.connection, "Andrewsapshin@Gmail.com", "1//refresh")
@@ -68,12 +66,16 @@ class TokenStorageTest(unittest.TestCase):
         )
 
     @env()
+    @env()
     def test_the_token_is_not_stored_in_plaintext(self):
         google_auth.save_refresh_token(self.connection, "a@b.com", "1//secret-value")
-        stored = self.connection.execute("SELECT refresh_token FROM google_tokens").fetchone()[0]
+        stored = self.connection.execute(
+            "SELECT refresh_token FROM google_tokens"
+        ).fetchone()["refresh_token"]
 
         self.assertNotIn("1//secret-value", stored)
 
+    @env()
     @env()
     def test_forgetting_removes_it(self):
         google_auth.save_refresh_token(self.connection, "a@b.com", "1//x")
