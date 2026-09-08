@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Auth, Booking, SuggestionSet } from '../types'
-import { clock, levelColor, pct } from '../lib/format'
+import { clock, levelColor, pct, sameInstant } from '../lib/format'
 
 interface Props {
   suggestions: SuggestionSet
@@ -60,7 +60,7 @@ export function Suggestions({ suggestions, auth, booking, onChange }: Props) {
       {suggestions.windows.length ? (
         <ul className="suggestions">
           {suggestions.windows.map((window) => (
-            <li key={window.start} className={booking?.start === window.start ? 'booked' : ''}>
+            <li key={window.start} className={sameInstant(booking?.start, window.start) ? 'booked' : ''}>
               <span className="when">
                 {window.section && <b>{window.section}</b>}
                 {clock(window.start)}–{clock(window.end)}
@@ -73,7 +73,7 @@ export function Suggestions({ suggestions, auth, booking, onChange }: Props) {
                 )}
               </span>
               {auth.signedIn && (
-                booking?.start === window.start ? (
+                sameInstant(booking?.start, window.start) ? (
                   <button className="act on" onClick={cancel} disabled={busy !== null}>
                     {busy === 'cancel' ? '…' : 'On your calendar ✓'}
                   </button>

@@ -16,3 +16,9 @@ export const levelColor = (fraction: number | null | undefined) => {
   if (fraction < 0.85) return 'var(--amber)'
   return 'var(--red)'
 }
+
+/** Two ISO timestamps naming the same moment, however they are spelled.
+ *  String equality breaks here: the same instant arrives as ...T16:30:00+00:00
+ *  from one source and ...T09:30:00-07:00 from another. */
+export const sameInstant = (a?: string | null, b?: string | null) =>
+  !!a && !!b && new Date(a).getTime() === new Date(b).getTime()

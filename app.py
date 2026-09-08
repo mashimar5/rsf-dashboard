@@ -580,8 +580,10 @@ def day_view(connection, viewed, today, earliest_day):
         "suggestions": suggestions,
         "booking": (
             {
-                "start": booked["starts_at"],
-                "end": booked["ends_at"],
+                # local time, so it is directly comparable with suggestion
+                # windows rather than being the same instant spelled in UTC
+                "start": datetime.fromisoformat(booked["starts_at"]).astimezone(LOCAL_TZ).isoformat(),
+                "end": datetime.fromisoformat(booked["ends_at"]).astimezone(LOCAL_TZ).isoformat(),
                 "predictedPct": booked["predicted_pct"],
             }
             if is_today and (booked := store.booking_on(connection, viewed))
