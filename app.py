@@ -9,9 +9,10 @@ from zoneinfo import ZoneInfo
 
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, redirect, request, send_from_directory, session, url_for
 
 import evaluate
+import google_auth
 import hours
 import policy
 import store
@@ -38,6 +39,9 @@ FAVICON_SVG = (
 MIN_WEEKDAY_INSTANCES = 3
 
 app = Flask(__name__)
+# Signs the session cookie that remembers who is signed in. Without it Flask
+# refuses to use sessions at all, so sign-in simply would not work.
+app.secret_key = os.environ.get("SECRET_KEY", "")
 
 
 def current_reading(connection):
@@ -265,6 +269,70 @@ def index():
     return send_from_directory(build.parent, "index.html")
 
 
+def signed_in_email():
+    return session.get("email")
+
+
+def busy_today(midnight, connection):
+    """The signed-in user's busy blocks for the day, or () when not linked.
+
+    Failures here return () rather than propagating: a calendar outage should
+    degrade suggestions to "as if you were free", not break the dashboard.
+    """
+    email = signed_in_email()
+    if not email:
+        return ()
+    try:
+        refresh_token = google_auth.load_refresh_token(connection, email)
+        if not refresh_token:
+            return ()
+        access_token = google_auth.access_token_from(refresh_token)
+        return google_auth.busy_intervals(access_token, midnight, midnight + timedelta(days=1))
+    except google_auth.NeedsReauth:
+        session.pop("email", None)          # prompt a fresh sign-in
+        return ()
+    except Exception as error:
+        app.logger.warning("free/busy lookup failed: %s", error)
+        return ()
+
+
+@app.route("/auth/google")
+def auth_start():
+    state = google_auth.new_state()
+    session["oauth_state"] = state
+    return redirect(google_auth.authorize_url(url_for("auth_callback", _external=True), state))
+
+
+@app.route("/auth/callback")
+def auth_callback():
+    # state ties the callback to the browser that started the flow
+    if not request.args.get("state") or request.args["state"] != session.pop("oauth_state", None):
+        return "Sign-in expired or was tampered with. Please try again.", 400
+    if "code" not in request.args:
+        return f"Google declined: {request.args.get('error', 'unknown')}", 400
+
+    tokens = google_auth.exchange_code(
+        request.args["code"], url_for("auth_callback", _external=True)
+    )
+    email = google_auth.email_from_id_token(tokens.get("id_token", ""))
+    if not email or email not in google_auth.allowed_emails():
+        return "That account is not allowed to sign in here.", 403
+    if "refresh_token" not in tokens:
+        return "Google did not return a refresh token. Revoke access and try again.", 400
+
+    google_auth.save_refresh_token(store.connect(), email, tokens["refresh_token"])
+    session["email"] = email
+    return redirect("/")
+
+
+@app.route("/auth/logout", methods=["POST"])
+def auth_logout():
+    email = session.pop("email", None)
+    if email and request.args.get("forget"):
+        google_auth.forget(store.connect(), email)
+    return jsonify({"signedIn": False})
+
+
 @app.route("/apple-touch-icon.png")
 @app.route("/apple-touch-icon-precomposed.png")
 def apple_touch_icon():
@@ -365,6 +433,7 @@ def day_view(connection, viewed, today, earliest_day):
     elif is_today:
         found = policy.suggest_by_section(
             bands, midnight, day_hours, BUCKET_MINUTES,
+            busy=busy_today(midnight, connection),
             not_before=datetime.now(LOCAL_TZ),
         )
         suggestions = {
@@ -397,6 +466,12 @@ def day_view(connection, viewed, today, earliest_day):
         "samples": [[minute_of(r), r.count, r.capacity] for r in readings],
         "typical": typical,
         "suggestions": suggestions,
+        "auth": {
+            "signedIn": bool(signed_in_email()),
+            "email": signed_in_email(),
+            # Sign-in only gates calendar-derived output; occupancy stays public
+            "calendarAware": bool(signed_in_email()),
+        },
         "hours": day_hours and {
             "text": day_hours.text,
             "opens": day_hours.opens,
