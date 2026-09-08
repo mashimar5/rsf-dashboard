@@ -145,3 +145,12 @@ h2 { font-size: .8125rem; font-weight: 600; color: var(--dim); margin: 0;
                background: var(--card); color: var(--fg); }
 .prefs .understood { display: flex; align-items: baseline; justify-content: space-between;
                      gap: 1rem; font-size: .8125rem; color: var(--dim); }
+
+.askbox { display: flex; gap: .5rem; }
+.askbox input { flex: 1; font: inherit; font-size: .8125rem; padding: .45rem .6rem;
+                border: 1px solid var(--line); border-radius: 8px;
+                background: var(--card); color: var(--fg); }
+.exchange { margin-top: 1rem; padding-top: .9rem; border-top: 1px solid var(--line); }
+.exchange .q { margin: 0 0 .35rem; font-size: .8125rem; color: var(--dim); }
+.exchange .a { margin: 0; font-size: .9375rem; line-height: 1.5; }
+.exchange .tools { margin: .4rem 0 0; font-size: .6875rem; color: var(--dim); }

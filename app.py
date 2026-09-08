@@ -16,6 +16,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 import evaluate
 import google_auth
+import ask
 import hours
 import intent
 import policy
@@ -502,6 +503,39 @@ def api_clear_preferences():
     return jsonify({"preferences": None})
 
 
+MAX_CHAT_TURNS = 8
+
+
+@app.route("/api/ask", methods=["POST"])
+def api_ask():
+    """Answer an ad hoc question about the occupancy history.
+
+    Deliberately narrow. The dashboard already answers "how busy is it" and
+    "when should I go" better than a sentence could; this exists for the
+    questions no fixed widget can anticipate -- comparisons across weekdays,
+    whether a particular day was unusual.
+
+    The model reaches the data only through vetted tools with typed arguments,
+    so it cannot write SQL, reach another table, or write anything at all.
+    """
+    if not signed_in_email():
+        return jsonify({"error": "not signed in"}), 401
+    if not ask.available():
+        return jsonify({"error": "not configured"}), 503
+    if not ask.within_rate_limit():
+        return jsonify({"error": "too many questions in the last hour"}), 429
+
+    payload = request.get_json(silent=True) or {}
+    question = (payload.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "no question given"}), 400
+
+    result = ask.answer(question)
+    if result is None:
+        return jsonify({"error": "could not answer that"}), 502
+    return jsonify(result)
+
+
 @app.route("/api/feedback", methods=["POST"])
 def api_feedback():
     if not signed_in_email():
@@ -826,6 +860,7 @@ def day_view(connection, viewed, today, earliest_day):
         ),
         "preferences": preferences,
         "preferencesAvailable": intent.available(),
+        "askAvailable": ask.available(),
         "auth": {
             "signedIn": bool(signed_in_email()),
             "email": signed_in_email(),

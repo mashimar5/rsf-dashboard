@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Chart } from './components/Chart'
 import { DayNav } from './components/DayNav'
 import { StatTiles } from './components/StatTiles'
+import { Ask } from './components/Ask'
 import { Feedback } from './components/Feedback'
 import { Suggestions } from './components/Suggestions'
 import type { DayView } from './types'
@@ -121,6 +122,8 @@ export default function App() {
       <div className="card">
         <Chart day={day} />
       </div>
+
+      {day.auth.signedIn && day.askAvailable && <Ask />}
     </main>
   )
 }
