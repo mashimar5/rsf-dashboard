@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from density import Reading
@@ -16,6 +16,28 @@ CREATE TABLE IF NOT EXISTS readings (
     capacity INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS readings_observed_at ON readings (observed_at);
+
+-- What the agent predicted, as it was shown. Kept separate from feedback so
+-- that "no answer" and "answered no" stay distinguishable: an unanswered
+-- prediction simply has no feedback row.
+CREATE TABLE IF NOT EXISTS predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    made_at TEXT NOT NULL,
+    for_date TEXT NOT NULL,
+    window_start TEXT NOT NULL,
+    window_end TEXT NOT NULL,
+    predicted_pct REAL NOT NULL,
+    -- the model's own confidence at the time, which cannot be recovered later
+    basis_weeks INTEGER NOT NULL,
+    basis_spread REAL
+);
+CREATE INDEX IF NOT EXISTS predictions_for_date ON predictions (for_date);
+
+CREATE TABLE IF NOT EXISTS feedback (
+    prediction_id INTEGER PRIMARY KEY REFERENCES predictions (id),
+    answered_at TEXT NOT NULL,
+    went INTEGER NOT NULL
+);
 """
 
 
@@ -99,6 +121,79 @@ def all_readings(connection: sqlite3.Connection) -> list[Reading]:
     """
     rows = connection.execute("SELECT * FROM readings ORDER BY observed_at").fetchall()
     return [_to_reading(row) for row in rows]
+
+
+def save_prediction(
+    connection: sqlite3.Connection,
+    for_date: date,
+    window_start: datetime,
+    window_end: datetime,
+    predicted_pct: float,
+    basis_weeks: int,
+    basis_spread: float | None = None,
+    made_at: datetime | None = None,
+) -> int:
+    """Record a prediction as it was shown, returning its id.
+
+    predicted_pct is what the user actually saw, not something to recompute
+    later -- the model will change, and recomputing would score today's model
+    against decisions it never made.
+    """
+    made_at = made_at or datetime.now(timezone.utc)
+    cursor = connection.execute(
+        """INSERT INTO predictions
+           (made_at, for_date, window_start, window_end, predicted_pct,
+            basis_weeks, basis_spread)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            made_at.astimezone(timezone.utc).isoformat(),
+            for_date.isoformat(),
+            window_start.astimezone(timezone.utc).isoformat(),
+            window_end.astimezone(timezone.utc).isoformat(),
+            predicted_pct,
+            basis_weeks,
+            basis_spread,
+        ),
+    )
+    connection.commit()
+    return cursor.lastrowid
+
+
+def record_feedback(
+    connection: sqlite3.Connection,
+    prediction_id: int,
+    went: bool,
+    answered_at: datetime | None = None,
+) -> None:
+    """Answer "did you go?" for one prediction. Re-answering replaces."""
+    answered_at = answered_at or datetime.now(timezone.utc)
+    connection.execute(
+        """INSERT INTO feedback (prediction_id, answered_at, went)
+           VALUES (?, ?, ?)
+           ON CONFLICT (prediction_id) DO UPDATE SET
+               answered_at = excluded.answered_at, went = excluded.went""",
+        (prediction_id, answered_at.astimezone(timezone.utc).isoformat(), int(went)),
+    )
+    connection.commit()
+
+
+def predictions_on(connection: sqlite3.Connection, for_date: date) -> list[dict]:
+    """Predictions made for one local date, each with its answer or None."""
+    rows = connection.execute(
+        """SELECT p.*, f.went, f.answered_at
+           FROM predictions p LEFT JOIN feedback f ON f.prediction_id = p.id
+           WHERE p.for_date = ? ORDER BY p.window_start""",
+        (for_date.isoformat(),),
+    ).fetchall()
+    return [
+        {
+            **{k: row[k] for k in row.keys() if k not in ("went", "answered_at")},
+            # None means unanswered, which is not the same as answered "no"
+            "went": None if row["went"] is None else bool(row["went"]),
+            "answered_at": row["answered_at"],
+        }
+        for row in rows
+    ]
 
 
 def count_rows(connection: sqlite3.Connection) -> int:
