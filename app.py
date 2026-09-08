@@ -3,7 +3,7 @@ import os
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import mean, median
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -164,6 +164,9 @@ def chart_points(readings, midnight):
     return " ".join(points)
 
 
+_collector: threading.Thread | None = None
+
+
 def start_collector(interval_seconds: int) -> None:
     """Collect in a background thread.
 
@@ -180,8 +183,15 @@ def start_collector(interval_seconds: int) -> None:
                 app.logger.warning("collection failed: %s", error)
             time.sleep(interval_seconds)
 
-    threading.Thread(target=loop, daemon=True, name="collector").start()
+    global _collector
+    _collector = threading.Thread(target=loop, daemon=True, name="collector")
+    _collector.start()
 
+
+# No reading for this long means something is wrong. Three missed cycles at
+# the deployed interval, which tolerates a transient API failure without
+# crying wolf.
+STALE_AFTER_SECONDS = 15 * 60
 
 # Unset locally, so `python app.py` does not collect; cron/collect.py owns that
 COLLECT_INTERVAL = int(os.environ.get("COLLECT_INTERVAL", "0"))
@@ -500,6 +510,61 @@ def auth_logout():
     return jsonify({"signedIn": False})
 
 
+@app.route("/health")
+def health():
+    """Liveness and data freshness, deliberately separated.
+
+    The HTTP status means "a restart might help": the database is unreachable,
+    or the collector thread has died while gunicorn carried on serving. Both
+    are conditions a restart plausibly fixes, so Fly's health check can act on
+    them.
+
+    Stale data is reported in the body but does not fail the check. If the
+    upstream sensor API is down, restarting this machine repeatedly changes
+    nothing and would turn one outage into a crash loop -- that is a human's
+    problem, not a supervisor's.
+    """
+    report = {
+        "collector": None,
+        "database": "unreachable",
+        "lastReadingAt": None,
+        "ageSeconds": None,
+        "stale": None,
+        "gapMinutes": None,
+    }
+    if COLLECT_INTERVAL:
+        report["collector"] = "alive" if (_collector and _collector.is_alive()) else "dead"
+
+    try:
+        connection = db()
+        row = connection.execute(
+            """SELECT MAX(observed_at) AS newest,
+                      COUNT(*) FILTER (WHERE observed_at > NOW() - INTERVAL '6 hours') AS recent
+               FROM readings"""
+        ).fetchone()
+        report["database"] = "ok"
+        if row["newest"]:
+            age = (datetime.now(timezone.utc) - row["newest"]).total_seconds()
+            report["lastReadingAt"] = row["newest"].astimezone(LOCAL_TZ).isoformat()
+            report["ageSeconds"] = round(age)
+            report["stale"] = age > STALE_AFTER_SECONDS
+        gap = connection.execute(
+            """WITH deltas AS (
+                   SELECT observed_at - LAG(observed_at) OVER (ORDER BY observed_at) AS d
+                   FROM readings WHERE observed_at > NOW() - INTERVAL '24 hours'
+               )
+               SELECT EXTRACT(EPOCH FROM MAX(d)) / 60 AS worst FROM deltas"""
+        ).fetchone()
+        # EXTRACT returns Decimal, which json renders as a string
+        report["gapMinutes"] = round(float(gap["worst"]), 1) if gap and gap["worst"] else None
+    except Exception as error:
+        app.logger.warning("health check could not reach the database: %s", error)
+
+    restartable = report["database"] != "ok" or report["collector"] == "dead"
+    report["ok"] = not restartable
+    return jsonify(report), (503 if restartable else 200)
+
+
 @app.route("/privacy")
 def privacy():
     """A real policy, not a formality: the app reads a user's calendar
@@ -683,6 +748,10 @@ def day_view(connection, viewed, today, earliest_day):
             else None
         ),
         "feedback": feedback_prompt(connection, viewed, is_today),
+        "stale": (
+            (datetime.now(LOCAL_TZ) - reading.observed_at).total_seconds() > STALE_AFTER_SECONDS
+            if is_today and reading else False
+        ),
         "auth": {
             "signedIn": bool(signed_in_email()),
             "email": signed_in_email(),

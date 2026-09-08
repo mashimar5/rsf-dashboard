@@ -111,6 +111,9 @@ export interface DayView {
   booking: Booking | null
   /** Set on a past day that had a booking, so the visit can be confirmed. */
   feedback: FeedbackPrompt | null
+  /** True when the newest reading is old enough that collection is
+   *  probably broken. Occupancy cannot be backfilled, so silence is costly. */
+  stale: boolean
   auth: Auth
   hours: Hours | null
 }

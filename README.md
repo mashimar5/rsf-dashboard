@@ -138,6 +138,7 @@ works locally only because it was installed once and never declared.
 | `/api/book` | `POST` writes a suggested window to the calendar; `DELETE` cancels it. Signed in only. |
 | `/api/feedback` | `POST` records whether a booked session happened. |
 | `/auth/google`, `/auth/callback`, `/auth/logout` | Google sign-in. |
+| `/health` | Liveness and data freshness. See the note below on why staleness does not fail it. |
 | `/privacy` | Privacy policy. |
 
 ## Configuration

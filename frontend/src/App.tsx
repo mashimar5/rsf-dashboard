@@ -64,6 +64,13 @@ export default function App() {
     <main>
       <h1>RSF WEIGHT ROOMS</h1>
 
+      {day.stale && (
+        <div className="card warn">
+          Readings have stopped arriving. The number below is the last one
+          recorded, not the current occupancy.
+        </div>
+      )}
+
       <DayNav date={day.date} label={day.label} isToday={day.isToday}
               nav={day.nav} onSelect={select} />
 

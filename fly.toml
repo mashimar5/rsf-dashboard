@@ -20,6 +20,17 @@ primary_region = "sjc"
   auto_stop_machines = false
   min_machines_running = 1
 
+  # Restarts only for conditions a restart can fix: the database unreachable,
+  # or the collector thread dead while gunicorn kept serving. Stale readings
+  # are reported by /health but do not fail it -- if the sensor API is down,
+  # restarting in a loop turns one outage into two.
+  [[http_service.checks]]
+    interval = "60s"
+    timeout = "10s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/health"
+
 [mounts]
   source = "rsf_data"
   destination = "/data"
