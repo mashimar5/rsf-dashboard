@@ -140,6 +140,60 @@ class CalendarTest(unittest.TestCase):
         )
 
 
+class SectionTest(unittest.TestCase):
+    """One window per part of the day, because the three quietest overall are
+    nearly always consecutive and amount to a single recommendation."""
+
+    def busy_free_day(self):
+        curve = flat(7, 23, 0.6)
+        curve.update(bands(h7=0.05, h8=0.06, h9=0.07))   # mornings far quietest
+        return curve
+
+    def test_returns_one_window_per_section(self):
+        result = policy.suggest_by_section(
+            self.busy_free_day(), MIDNIGHT, hours(7, 23), BUCKET
+        )
+        sections = [w.section for w in result.windows]
+
+        self.assertEqual(sorted(sections), ["Afternoon", "Evening", "Morning"])
+        self.assertEqual(len(sections), len(set(sections)), "no section twice")
+
+    def test_avoids_the_clustering_that_ranking_alone_produces(self):
+        curve = self.busy_free_day()
+        ranked = policy.suggest(curve, MIDNIGHT, hours(7, 23), BUCKET).windows
+        spread = policy.suggest_by_section(curve, MIDNIGHT, hours(7, 23), BUCKET).windows
+
+        self.assertTrue(all(w.start.hour < 12 for w in ranked), "all one stretch")
+        self.assertGreater(max(w.start.hour for w in spread) -
+                           min(w.start.hour for w in spread), 6)
+
+    def test_picks_the_quietest_within_each_section(self):
+        curve = flat(7, 23, 0.6)
+        curve.update(bands(h14=0.2))            # one quiet afternoon hour
+        result = policy.suggest_by_section(curve, MIDNIGHT, hours(7, 23), BUCKET)
+        afternoon = next(w for w in result.windows if w.section == "Afternoon")
+
+        self.assertEqual(afternoon.start, at(14))
+
+    def test_a_section_with_no_free_window_is_absent_not_padded(self):
+        busy = [(at(12), at(17))]               # afternoon fully booked
+        result = policy.suggest_by_section(
+            self.busy_free_day(), MIDNIGHT, hours(7, 23), BUCKET, busy=busy
+        )
+        sections = {w.section for w in result.windows}
+
+        self.assertNotIn("Afternoon", sections)
+        self.assertIn("Morning", sections)
+
+    def test_refuses_when_nothing_anywhere_is_quiet_enough(self):
+        result = policy.suggest_by_section(
+            flat(7, 23, 0.95), MIDNIGHT, hours(7, 23), BUCKET
+        )
+
+        self.assertEqual(result.windows, [])
+        self.assertIn("quiet enough", result.refusal)
+
+
 class ConfidenceTest(unittest.TestCase):
     def test_each_window_carries_the_spread_of_its_own_buckets(self):
         curve = flat(8, 22, 0.5)

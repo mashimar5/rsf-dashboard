@@ -23,6 +23,17 @@ WIND_DOWN_MINUTES = 15
 CROWDING_CEILING = 0.85
 MAX_SUGGESTIONS = 3
 
+# Parts of the day, by the minute a window starts. One suggestion from each
+# gives genuinely different choices to match against a schedule; the three
+# quietest windows overall are nearly always consecutive, because the quiet
+# part of a day is one contiguous stretch rather than three scattered ones.
+# Three per section would reintroduce that same clustering one level down.
+SECTIONS = (
+    ("Morning", 0, 12 * 60),
+    ("Afternoon", 12 * 60, 17 * 60),
+    ("Evening", 17 * 60, 24 * 60),
+)
+
 
 @dataclass
 class Window:
@@ -30,6 +41,7 @@ class Window:
     end: datetime
     predicted_pct: float
     spread: float | None
+    section: str | None = None
 
 
 @dataclass
@@ -112,3 +124,41 @@ def suggest(bands, midnight, day_hours, bucket_minutes, busy=(),
         if len(chosen) == limit:
             break
     return Suggestions(sorted(chosen, key=lambda w: w.start))
+
+
+def section_of(start_minute: int):
+    for name, begins, ends in SECTIONS:
+        if begins <= start_minute < ends:
+            return name
+    return SECTIONS[-1][0]          # a closing time past midnight
+
+
+def suggest_by_section(bands, midnight, day_hours, bucket_minutes, busy=(),
+                       ceiling=CROWDING_CEILING):
+    """The quietest eligible window in each part of the day.
+
+    A section with no eligible window is simply absent rather than padded --
+    on a packed day there may genuinely be no free morning hour, and an empty
+    slot would read as a failure rather than a fact.
+    """
+    if not bands:
+        return Suggestions([], refusal="no forecast for this day yet")
+    if not day_hours or day_hours.opens is None:
+        return Suggestions([], refusal="closed")
+
+    candidates = [
+        window
+        for window in candidate_windows(bands, midnight, day_hours, bucket_minutes, busy=busy)
+        if window.predicted_pct <= ceiling
+    ]
+    if not candidates:
+        return Suggestions([], refusal="no free window quiet enough")
+
+    best: dict[str, Window] = {}
+    for window in candidates:
+        minute = int((window.start - midnight).total_seconds() // 60)
+        window.section = section_of(minute)
+        if window.section not in best or window.predicted_pct < best[window.section].predicted_pct:
+            best[window.section] = window
+
+    return Suggestions(sorted(best.values(), key=lambda w: w.start))
