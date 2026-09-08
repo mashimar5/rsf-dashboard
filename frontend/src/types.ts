@@ -63,6 +63,13 @@ export interface SuggestionSet {
   refusal: string | null
 }
 
+export interface Auth {
+  signedIn: boolean
+  email: string | null
+  /** True when suggestions are filtered by the signed-in user's calendar. */
+  calendarAware: boolean
+}
+
 export interface Nav {
   prev: string | null
   next: string | null
@@ -83,5 +90,6 @@ export interface DayView {
   typical: Typical | null
   /** Today only — 'when should I go' is not a question about a finished day. */
   suggestions: SuggestionSet | null
+  auth: Auth
   hours: Hours | null
 }

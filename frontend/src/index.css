@@ -90,8 +90,16 @@ h1 { font-size: 1rem; font-weight: 600; letter-spacing: .02em; margin: 0 0 1rem;
 .legend i.today { border-top-style: solid; border-top-color: var(--accent); }
 .legend i.typical { border-top-style: dashed; border-top-color: var(--dim); }
 
-h2 { font-size: .8125rem; font-weight: 600; color: var(--dim); margin: 0 0 .9rem;
+h2 { font-size: .8125rem; font-weight: 600; color: var(--dim); margin: 0;
      letter-spacing: .02em; }
+.cardhead { display: flex; align-items: baseline; justify-content: space-between;
+            gap: 1rem; margin-bottom: .9rem; flex-wrap: wrap; }
+.connect { font-size: .8125rem; color: var(--accent); text-decoration: none; font-weight: 500; }
+.connect:hover { text-decoration: underline; }
+.calstatus { font-size: .75rem; color: var(--dim); display: inline-flex; align-items: baseline; gap: .5rem; }
+.calstatus button { font: inherit; color: var(--dim); background: none; border: none;
+                    padding: 0; cursor: pointer; text-decoration: underline; }
+.hint { font-size: .75rem; color: var(--dim); margin: .9rem 0 0; }
 .suggestions { list-style: none; margin: 0; padding: 0; }
 .suggestions li { display: flex; align-items: baseline; justify-content: space-between;
                   gap: 1rem; padding: .5rem 0; border-top: 1px solid var(--line); }

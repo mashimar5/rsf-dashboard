@@ -99,7 +99,7 @@ export default function App() {
         )}
       </div>
 
-      {day.suggestions && <Suggestions suggestions={day.suggestions} />}
+      {day.suggestions && <Suggestions suggestions={day.suggestions} auth={day.auth} />}
 
       <div className="card">
         <Chart day={day} />
