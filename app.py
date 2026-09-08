@@ -565,6 +565,37 @@ def health():
     return jsonify(report), (503 if restartable else 200)
 
 
+@app.route("/health/freshness")
+def freshness():
+    """Fails when readings have stopped arriving.
+
+    Separate from /health on purpose. Fly's health check watches /health and
+    restarts on failure, so staleness must not fail that -- a dead sensor API
+    is not fixed by restarting. This endpoint is for an external monitor,
+    which should page a human instead. Any uptime service can watch it; no
+    JSON keyword matching required.
+    """
+    try:
+        row = db().execute("SELECT MAX(observed_at) AS newest FROM readings").fetchone()
+    except Exception as error:
+        return jsonify({"fresh": False, "reason": f"database unreachable: {error}"}), 503
+
+    if not row["newest"]:
+        return jsonify({"fresh": False, "reason": "no readings recorded"}), 503
+
+    age = (datetime.now(timezone.utc) - row["newest"]).total_seconds()
+    fresh = age <= STALE_AFTER_SECONDS
+    body = {
+        "fresh": fresh,
+        "ageSeconds": round(age),
+        "thresholdSeconds": STALE_AFTER_SECONDS,
+        "lastReadingAt": row["newest"].astimezone(LOCAL_TZ).isoformat(),
+    }
+    if not fresh:
+        body["reason"] = f"no reading for {round(age / 60)} minutes"
+    return jsonify(body), (200 if fresh else 503)
+
+
 @app.route("/privacy")
 def privacy():
     """A real policy, not a formality: the app reads a user's calendar

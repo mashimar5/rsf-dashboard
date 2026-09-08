@@ -70,3 +70,39 @@ class HealthTest(testing.DatabaseTest):
 
         self.assertEqual(status, 200)
         self.assertIsNone(body["lastReadingAt"])
+
+
+class FreshnessEndpointTest(testing.DatabaseTest):
+    """The endpoint an external monitor watches. Unlike /health, staleness
+    here *is* a failure -- nothing restarts on it, a human is told."""
+
+    def get(self):
+        response = app.app.test_client().get("/health/freshness")
+        return response.status_code, response.get_json()
+
+    def save(self, minutes_ago):
+        store.save(self.connection, Reading(
+            80, 150, datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)))
+
+    def test_recent_data_passes(self):
+        self.save(2)
+        status, body = self.get()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["fresh"])
+
+    def test_stale_data_fails_here_even_though_it_does_not_fail_health(self):
+        self.save(60)
+        status, body = self.get()
+        health_status, _ = app.app.test_client().get("/health").status_code, None
+
+        self.assertEqual(status, 503)
+        self.assertFalse(body["fresh"])
+        self.assertIn("60 minutes", body["reason"])
+        self.assertEqual(health_status, 200, "/health must not restart on staleness")
+
+    def test_an_empty_database_fails_rather_than_looking_fine(self):
+        status, body = self.get()
+
+        self.assertEqual(status, 503)
+        self.assertIn("no readings", body["reason"])
