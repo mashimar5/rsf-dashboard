@@ -6,6 +6,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import app
+import testing  # noqa: F401  -- points the pool at the test database
 from density import Reading
 
 TZ = ZoneInfo("America/Los_Angeles")

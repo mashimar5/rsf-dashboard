@@ -14,6 +14,11 @@ import unittest
 
 TEST_DATABASE_URL = os.environ.get("RSF_TEST_DATABASE_URL", "postgresql:///rsf_test")
 
+# Set at import, not in setUpClass: tests that exercise the app rather than the
+# store still open the pool, and without this they would reach for the
+# development database -- which exists locally and does not in CI.
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+
 TABLES = "feedback, bookings, predictions, readings, app_state, google_tokens"
 
 
