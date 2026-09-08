@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, request, send_from_directory, session, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import evaluate
 import google_auth
@@ -42,6 +43,10 @@ app = Flask(__name__)
 # Signs the session cookie that remembers who is signed in. Without it Flask
 # refuses to use sessions at all, so sign-in simply would not work.
 app.secret_key = os.environ.get("SECRET_KEY", "")
+# Fly terminates TLS at its edge and forwards plain HTTP, so without this
+# url_for(_external=True) builds http:// URLs. The OAuth redirect_uri would
+# then not match the https one registered with Google.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 
 def current_reading(connection):

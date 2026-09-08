@@ -1,3 +1,4 @@
+import os
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -113,6 +114,28 @@ def same_weekday_as_today(weeks_ago, hour):
     """A local datetime `weeks_ago` weeks back, so it shares today's weekday"""
     day = datetime.now(TZ).date() - timedelta(weeks=weeks_ago)
     return datetime(day.year, day.month, day.day, hour, tzinfo=TZ)
+
+
+class ProxyAwarenessTest(unittest.TestCase):
+    """Fly forwards plain HTTP; the OAuth redirect_uri must still be https,
+    or Google rejects it as a mismatch."""
+
+    def test_external_urls_honour_the_forwarded_protocol(self):
+        # secret_key is read at import, so patching the environment is too
+        # late; it lives in app.config, which patch.dict can restore cleanly
+        with patch.dict(os.environ, {"GOOGLE_CLIENT_ID": "cid"}), \
+             patch.dict(app.app.config, {"SECRET_KEY": "test-key"}):
+            client = app.app.test_client()
+            response = client.get(
+                "/auth/google",
+                headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "rsf-dashboard.fly.dev"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(
+            "redirect_uri=https%3A%2F%2Frsf-dashboard.fly.dev%2Fauth%2Fcallback",
+            response.headers["Location"],
+        )
 
 
 class DayApiTest(unittest.TestCase):
