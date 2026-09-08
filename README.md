@@ -187,6 +187,30 @@ Three things that must stay as they are:
   without it `url_for(_external=True)` builds `http://` URLs and Google rejects
   the OAuth redirect as a mismatch.
 
+## Monitoring
+
+Ingestion cannot fail silently, which matters more here than in most pipelines
+because there is no replay: occupancy is a point-in-time measurement with no
+historical endpoint, so a missed poll is lost permanently rather than
+backfillable.
+
+| Signal | Endpoint | Watched by | On failure |
+| --- | --- | --- | --- |
+| Liveness | `/health` | Fly health check, every 60s | Restart the machine |
+| Freshness | `/health/freshness` | UptimeRobot, every 5 min | Email a human |
+
+The split is deliberate. `/health` returns 503 only for conditions a restart
+could plausibly fix — the database unreachable, or the collector thread dead
+while gunicorn carried on serving, which is otherwise invisible. Stale readings
+do **not** fail it: if the sensor API is down, restarting every sixty seconds
+turns one outage into two. Staleness gets its own endpoint that nothing
+restarts on, because the right response is to tell someone.
+
+Threshold is 15 minutes — three missed cycles at the deployed interval, which
+absorbs a transient API failure without crying wolf. The dashboard also says
+plainly when readings have stopped, so the headline number is never mistaken
+for current occupancy.
+
 ## Layout
 
 | File | Contents |
