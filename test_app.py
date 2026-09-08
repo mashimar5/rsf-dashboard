@@ -158,6 +158,20 @@ class DayApiTest(unittest.TestCase):
         self.assertIsNotNone(day["live"])
         self.assertIsNone(day["summary"], "summary is for days already over")
 
+    def test_no_suggestions_below_the_three_instance_gate(self):
+        """weekday_bands returns bands from any number of instances, so the
+        gate has to be applied here or a single past weekday becomes advice."""
+        readings = [reading(same_weekday_as_today(1, hour), 100) for hour in (8, 12, 18)]
+        day = self._fetch(readings)
+
+        self.assertEqual(day["suggestions"]["windows"], [])
+        self.assertIn("1 so far", day["suggestions"]["refusal"])
+
+    def test_suggestions_absent_for_a_past_day(self):
+        day = self._fetch([])
+        self.assertTrue(day["isToday"])
+        self.assertIsNotNone(day["suggestions"])
+
     def test_samples_are_minute_count_capacity_triples(self):
         samples = self._fetch([], today_samples=3)["samples"]
 

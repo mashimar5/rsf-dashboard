@@ -194,6 +194,25 @@ class SectionTest(unittest.TestCase):
         self.assertIn("quiet enough", result.refusal)
 
 
+class RemainderOfDayTest(unittest.TestCase):
+    def test_windows_that_have_already_started_are_dropped(self):
+        result = policy.suggest_by_section(
+            flat(7, 23, 0.3), MIDNIGHT, hours(7, 23), BUCKET, not_before=at(17)
+        )
+
+        self.assertTrue(result.windows)
+        for window in result.windows:
+            self.assertGreaterEqual(window.start, at(17))
+
+    def test_late_in_the_day_it_refuses_rather_than_looking_backwards(self):
+        result = policy.suggest_by_section(
+            flat(7, 23, 0.3), MIDNIGHT, hours(7, 23), BUCKET, not_before=at(22, 30)
+        )
+
+        self.assertEqual(result.windows, [])
+        self.assertIn("nothing left today", result.refusal)
+
+
 class ConfidenceTest(unittest.TestCase):
     def test_each_window_carries_the_spread_of_its_own_buckets(self):
         curve = flat(8, 22, 0.5)

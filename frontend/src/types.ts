@@ -47,6 +47,22 @@ export interface Typical {
   points: [number, number, number, number][]
 }
 
+export interface SuggestedWindow {
+  start: string
+  end: string
+  predictedPct: number
+  /** Disagreement across past instances in these buckets; null when a single
+   *  instance backs them. Wide means treat the number loosely. */
+  spread: number | null
+  section: string | null
+}
+
+export interface SuggestionSet {
+  windows: SuggestedWindow[]
+  /** Why there is nothing to suggest, when windows is empty. */
+  refusal: string | null
+}
+
 export interface Nav {
   prev: string | null
   next: string | null
@@ -65,5 +81,7 @@ export interface DayView {
   /** [minuteOfDay, count, capacity] */
   samples: [number, number, number][]
   typical: Typical | null
+  /** Today only — 'when should I go' is not a question about a finished day. */
+  suggestions: SuggestionSet | null
   hours: Hours | null
 }

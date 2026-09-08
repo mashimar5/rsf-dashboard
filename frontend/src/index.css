@@ -89,3 +89,18 @@ h1 { font-size: 1rem; font-weight: 600; letter-spacing: .02em; margin: 0 0 1rem;
             margin-right: .4rem; border-top-width: 2px; }
 .legend i.today { border-top-style: solid; border-top-color: var(--accent); }
 .legend i.typical { border-top-style: dashed; border-top-color: var(--dim); }
+
+h2 { font-size: .8125rem; font-weight: 600; color: var(--dim); margin: 0 0 .9rem;
+     letter-spacing: .02em; }
+.suggestions { list-style: none; margin: 0; padding: 0; }
+.suggestions li { display: flex; align-items: baseline; justify-content: space-between;
+                  gap: 1rem; padding: .5rem 0; border-top: 1px solid var(--line); }
+.suggestions li:first-child { border-top: none; padding-top: 0; }
+.suggestions .when { font-size: .9375rem; }
+.suggestions .when b { display: inline-block; min-width: 5.5rem; font-weight: 500;
+                       color: var(--dim); font-size: .8125rem; }
+.suggestions .level { font-size: .9375rem; font-weight: 600; white-space: nowrap; }
+.suggestions .level i { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                        margin-right: .45rem; vertical-align: middle; }
+.suggestions .level em { font-style: normal; font-weight: 400; font-size: .75rem;
+                         color: var(--dim); }

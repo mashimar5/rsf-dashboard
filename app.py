@@ -13,6 +13,7 @@ from flask import Flask, jsonify, request, send_from_directory
 
 import evaluate
 import hours
+import policy
 import store
 from density import fetch_reading, percentage
 
@@ -347,6 +348,39 @@ def day_view(connection, viewed, today, earliest_day):
             "points": band_points(bands),
         }
 
+    # Suggestions are for today only: "when should I go" is not a question
+    # about a day that is over, and the stat tiles already say what happened.
+    suggestions = None
+    if is_today and weeks < MIN_WEEKDAY_INSTANCES:
+        # weekday_bands returns bands from any number of instances; the
+        # three-instance gate is applied to the drawn curve, so without this
+        # the policy would happily recommend from a single past weekday.
+        suggestions = {
+            "windows": [],
+            "refusal": (
+                f"needs {MIN_WEEKDAY_INSTANCES} past {viewed.strftime('%A')}s to predict from"
+                f" — {weeks} so far"
+            ),
+        }
+    elif is_today:
+        found = policy.suggest_by_section(
+            bands, midnight, day_hours, BUCKET_MINUTES,
+            not_before=datetime.now(LOCAL_TZ),
+        )
+        suggestions = {
+            "windows": [
+                {
+                    "start": window.start.isoformat(),
+                    "end": window.end.isoformat(),
+                    "predictedPct": window.predicted_pct,
+                    "spread": window.spread,
+                    "section": window.section,
+                }
+                for window in found.windows
+            ],
+            "refusal": found.refusal,
+        }
+
     return {
         "date": viewed.isoformat(),
         "isToday": is_today,
@@ -362,6 +396,7 @@ def day_view(connection, viewed, today, earliest_day):
         "summary": summary,
         "samples": [[minute_of(r), r.count, r.capacity] for r in readings],
         "typical": typical,
+        "suggestions": suggestions,
         "hours": day_hours and {
             "text": day_hours.text,
             "opens": day_hours.opens,
