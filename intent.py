@@ -13,7 +13,7 @@ test.
 """
 
 import os
-from datetime import datetime
+import re
 
 import anthropic
 from pydantic import BaseModel, Field, field_validator
@@ -53,6 +53,18 @@ class Preferences(BaseModel):
     summary: str = Field(
         description="One short sentence saying what was understood, addressed to the user."
     )
+
+    @field_validator("summary")
+    @classmethod
+    def _clean_summary(cls, value: str) -> str:
+        """Strip generation artifacts before this reaches a person.
+
+        Observed once in production: a summary ending in a leaked
+        "summary_end_placeholder" token. Rare, but it is user-facing text, and
+        a schema cannot police the contents of a free string.
+        """
+        cleaned = re.sub(r"\s*\w*_?placeholder\w*\s*$", "", value.strip())
+        return cleaned[:200].strip()
 
     @field_validator("earliest_hour", "latest_hour")
     @classmethod
@@ -108,7 +120,11 @@ Rules:
 - Hours are local wall-clock, 0-23. "mornings" is not an hour; only set
   earliest_hour or latest_hour if they named or clearly implied a boundary.
 - latest_hour is the latest a session may START.
-- max_crowding_pct is a fraction: "not when it's over half full" is 0.5.
+- max_crowding_pct is a fraction. A stated proportion counts as expressed,
+  whether written as a number or in words: "under 50%" and "more than half
+  full" are both 0.5; "a quarter full" is 0.25. Only vague words with no
+  proportion in them -- "not too busy", "when it's quiet" -- are too imprecise
+  to use, and those stay null.
 - summary is one short sentence in second person saying what you understood,
   so they can see whether you got it right."""
 

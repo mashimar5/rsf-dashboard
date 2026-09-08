@@ -141,3 +141,20 @@ class PolicyHonoursPreferencesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SummaryHygieneTest(unittest.TestCase):
+    """The summary is user-facing free text; a schema cannot police it."""
+
+    def test_a_leaked_placeholder_token_is_stripped(self):
+        """Observed once against the real API."""
+        p = intent.Preferences(summary="You want mornings.summary_end_placeholder")
+        self.assertEqual(p.summary, "You want mornings.")
+
+    def test_ordinary_summaries_are_untouched_apart_from_whitespace(self):
+        p = intent.Preferences(summary="  90-minute sessions before 11am.  ")
+        self.assertEqual(p.summary, "90-minute sessions before 11am.")
+
+    def test_a_runaway_summary_is_capped(self):
+        p = intent.Preferences(summary="x" * 900)
+        self.assertLessEqual(len(p.summary), 200)
