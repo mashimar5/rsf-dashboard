@@ -1,5 +1,7 @@
 # RSF Dashboard
 
+[![CI](https://github.com/mashimar5/rsf-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/mashimar5/rsf-dashboard/actions/workflows/ci.yml)
+
 Live and historical occupancy for the UC Berkeley Recreational Sports Facility
 weight rooms, and an agent that suggests when to go.
 
@@ -107,6 +109,11 @@ fine and simply offers no calendar features.
 
 No network access required: HTTP is mocked and the hours parser runs against a
 saved fixture in `tests/`.
+
+GitHub Actions runs the same suite on every push, plus a TypeScript typecheck,
+a frontend build, and a Docker build. The Python job installs from
+`requirements.txt` on a clean machine, which is what catches a dependency that
+works locally only because it was installed once and never declared.
 
 ## Endpoints
 
