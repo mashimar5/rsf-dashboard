@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy — RSF Dashboard</title>
+<style>
+  :root { color-scheme: light dark; --fg:#111; --dim:#666; --line:#d8d8d8; --bg:#fafafa; --card:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#f0f0f0; --dim:#999; --line:#333; --bg:#141414; --card:#1d1d1d; }
+  }
+  body { margin:0; padding:2.5rem 1.25rem; background:var(--bg); color:var(--fg);
+         font:16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width:44rem; margin:0 auto; }
+  h1 { font-size:1.5rem; margin:0 0 .25rem; }
+  h2 { font-size:1rem; margin:2rem 0 .5rem; }
+  .updated { color:var(--dim); font-size:.875rem; margin:0 0 2rem; }
+  ul { padding-left:1.25rem; }
+  li { margin:.35rem 0; }
+  code { background:var(--card); border:1px solid var(--line); border-radius:4px;
+         padding:.1rem .3rem; font-size:.9em; }
+  a { color:#2563eb; }
+  footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--line);
+           color:var(--dim); font-size:.875rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Privacy</h1>
+  <p class="updated">RSF Dashboard · last updated 7 September 2026</p>
+
+  <p>
+    RSF Dashboard is a personal project that shows how busy the UC Berkeley RSF
+    weight rooms are. It is operated by one person and is not affiliated with
+    UC Berkeley or with Density, whose sensors provide the occupancy figures.
+  </p>
+
+  <h2>What it collects without signing in</h2>
+  <p>
+    Nothing about you. The dashboard records occupancy counts for the weight
+    rooms — how many people are present, roughly every five minutes. These are
+    aggregate numbers from a doorway sensor and identify nobody. No accounts,
+    no cookies, no analytics, no tracking.
+  </p>
+
+  <h2>What it collects if you sign in with Google</h2>
+  <p>Signing in is optional and exists only to suggest workout times around your schedule.</p>
+  <ul>
+    <li>
+      <strong>Free/busy times.</strong> The app requests the
+      <code>calendar.freebusy</code> scope, which returns only the start and end
+      times of blocks when you are busy. It does not receive event titles,
+      descriptions, locations, attendees, or any other event content — Google
+      does not send them under this scope.
+    </li>
+    <li>
+      <strong>Your email address</strong>, used solely to check that the account
+      signing in is the one permitted to.
+    </li>
+  </ul>
+
+  <h2>What is stored</h2>
+  <ul>
+    <li>
+      <strong>Free/busy times are never stored.</strong> They are requested when
+      a page loads, used to filter suggested times, and discarded.
+    </li>
+    <li>
+      <strong>A Google refresh token</strong>, encrypted at rest, so you do not
+      have to sign in on every visit.
+    </li>
+    <li><strong>Your email address</strong>, alongside that token.</li>
+  </ul>
+
+  <h2>Who it is shared with</h2>
+  <p>
+    Nobody. Data is not sold, shared, or transmitted to any third party. There
+    are no advertisers, analytics providers, or trackers. The only outbound
+    requests are to Google (for your free/busy times), to Density (for occupancy
+    counts), and to UC Berkeley Recreation &amp; Wellbeing (for opening hours).
+  </p>
+
+  <h2>Removing your data</h2>
+  <p>
+    Signing out with the "forget me" option deletes the stored refresh token and
+    email. You can also revoke access at any time from
+    <a href="https://myaccount.google.com/permissions">Google Account permissions</a>,
+    which immediately invalidates the token regardless of anything stored here.
+  </p>
+
+  <h2>Where it runs</h2>
+  <p>
+    On a single server hosted by Fly.io in California. The source code is public
+    at <a href="https://github.com/mashimar5/rsf-dashboard">github.com/mashimar5/rsf-dashboard</a>,
+    so every claim on this page can be checked against it.
+  </p>
+
+  <h2>Contact</h2>
+  <p>Questions: <a href="mailto:andrewsapshin@gmail.com">andrewsapshin@gmail.com</a></p>
+
+  <footer><a href="/">← Back to the dashboard</a></footer>
+</main>
+</body>
+</html>

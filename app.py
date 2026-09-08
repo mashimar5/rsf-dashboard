@@ -333,6 +333,13 @@ def auth_logout():
     return jsonify({"signedIn": False})
 
 
+@app.route("/privacy")
+def privacy():
+    """A real policy, not a formality: the app reads a user's calendar
+    availability, and Google requires a published policy to leave Testing."""
+    return send_from_directory(app.static_folder, "privacy.html")
+
+
 @app.route("/apple-touch-icon.png")
 @app.route("/apple-touch-icon-precomposed.png")
 def apple_touch_icon():
