@@ -5,7 +5,10 @@ primary_region = "sjc"
 [build]
 
 [env]
-  COLLECT_INTERVAL = "300"
+  # 240 rather than 300: Neon's free tier suspends the compute after about
+  # five minutes idle, so a five-minute collection interval sits exactly on
+  # the boundary and pays a cold start most cycles. Four minutes keeps it warm.
+  COLLECT_INTERVAL = "240"
   RSF_HOURS_CACHE = "/data/hours_cache.json"
 
 [http_service]

@@ -134,9 +134,9 @@ works locally only because it was installed once and never declared.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DENSITY_SHARE_TOKEN` | — | Required. Read from `.env` locally, injected as a Fly secret in deployment. |
-| `RSF_DB_PATH` | `./readings.db` | SQLite location. Points at the mounted volume in deployment. |
+| `DATABASE_URL` | `postgresql:///rsf_dev` | Postgres connection string. Use the pooled endpoint on Neon. |
 | `RSF_HOURS_CACHE` | `./hours_cache.json` | Cached hours tables. |
-| `COLLECT_INTERVAL` | unset | Seconds between in-process collections. Unset means the web app does not collect, which is the local default. |
+| `COLLECT_INTERVAL` | unset | Seconds between in-process collections. Unset means the web app does not collect, which is the local default. Deployment uses 240 rather than 300 to stay inside Neon's ~5 minute idle suspend. |
 | `PORT` | `5001` | Web server port. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | OAuth client. Calendar features are simply absent without them. |
 | `ALLOWED_EMAILS` | empty | Comma-separated allowlist. Empty admits nobody, so a misconfigured deploy fails closed. |
