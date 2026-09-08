@@ -313,7 +313,7 @@ class PredictionLogTest(unittest.TestCase):
 
     def save(self, pct=0.35, weeks=3, spread=0.1):
         start = datetime(2026, 9, 7, 14, tzinfo=TZ)
-        return store.save_prediction(
+        return store.log_prediction(
             self.connection, date(2026, 9, 7), start, start + timedelta(hours=1),
             predicted_pct=pct, basis_weeks=weeks, basis_spread=spread,
         )
@@ -352,3 +352,31 @@ class PredictionLogTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StorageNormalisationTest(unittest.TestCase):
+    """Timestamps are compared as text, so what goes in must be UTC."""
+
+    def setUp(self):
+        self.path = Path(f"/tmp/rsf-utc-{id(self)}.db")
+        self.connection = store.connect(self.path)
+        self.addCleanup(self.connection.close)
+        self.addCleanup(lambda: [
+            self.path.with_name(self.path.name + s).unlink(missing_ok=True)
+            for s in ("", "-wal", "-shm")
+        ])
+
+    def test_a_local_time_reading_is_stored_as_utc(self):
+        local = datetime(2026, 9, 7, 14, tzinfo=TZ)
+        store.save(self.connection, Reading(90, 150, local))
+        stored = self.connection.execute("SELECT observed_at FROM readings").fetchone()[0]
+
+        self.assertTrue(stored.endswith("+00:00"), f"stored as {stored}")
+
+    def test_a_local_time_reading_is_still_found_by_a_range_query(self):
+        local = datetime(2026, 9, 7, 14, tzinfo=TZ)
+        store.save(self.connection, Reading(90, 150, local))
+        found = store.between(self.connection, local - timedelta(minutes=1),
+                              local + timedelta(minutes=1))
+
+        self.assertEqual(len(found), 1, "text comparison fails without normalising")

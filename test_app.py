@@ -145,8 +145,11 @@ class DayApiTest(unittest.TestCase):
         now = datetime.now(TZ)
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         today = [reading(midnight + timedelta(hours=n), 100) for n in range(today_samples)]
-        with patch("store.all_readings", return_value=readings), \
-             patch("store.between", return_value=today), \
+        # day_view queries twice: today's readings, then the weekday history
+        def between(_conn, start, _end):
+            return today if start == midnight else readings + today
+
+        with patch("store.between", side_effect=between), \
              patch("store.earliest", return_value=reading(midnight - timedelta(days=30), 0)), \
              patch("app.fetch_reading", return_value=reading(now, 100)):
             return app.app.test_client().get("/api/day").get_json()

@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     predicted_pct REAL NOT NULL,
     -- the model's own confidence at the time, which cannot be recovered later
     basis_weeks INTEGER NOT NULL,
-    basis_spread REAL
+    basis_spread REAL,
+    section TEXT
 );
 CREATE INDEX IF NOT EXISTS predictions_for_date ON predictions (for_date);
 -- One row per suggested window per day, so re-rendering the page all day
@@ -69,10 +70,14 @@ def _migrate(connection: sqlite3.Connection) -> None:
     CREATE TABLE IF NOT EXISTS silently does nothing for an existing table, so
     a new column never appears without this.
     """
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(bookings)")}
-    if columns and "prediction_id" not in columns:
-        connection.execute("ALTER TABLE bookings ADD COLUMN prediction_id INTEGER")
-        connection.commit()
+    for table, column, kind in (
+        ("bookings", "prediction_id", "INTEGER"),
+        ("predictions", "section", "TEXT"),
+    ):
+        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if columns and column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            connection.commit()
 
 
 def connect(db_path=DB_PATH) -> sqlite3.Connection:
@@ -91,10 +96,21 @@ def connect(db_path=DB_PATH) -> sqlite3.Connection:
 
 
 def save(connection: sqlite3.Connection, reading: Reading) -> None:
-    """Append one reading"""
+    """Append one reading, normalised to UTC.
+
+    Every query bound is converted to UTC before comparison, so a row stored
+    with a local offset would sort and filter against them incorrectly --
+    timestamps are compared as text. Readings from the collector are already
+    UTC, which is why this was invisible until a local-time Reading was saved
+    directly.
+    """
     connection.execute(
         "INSERT INTO readings (observed_at, count, capacity) VALUES (?, ?, ?)",
-        (reading.observed_at.isoformat(), reading.count, reading.capacity),
+        (
+            reading.observed_at.astimezone(timezone.utc).isoformat(),
+            reading.count,
+            reading.capacity,
+        ),
     )
     connection.commit()
 
@@ -158,42 +174,6 @@ def all_readings(connection: sqlite3.Connection) -> list[Reading]:
     return [_to_reading(row) for row in rows]
 
 
-def save_prediction(
-    connection: sqlite3.Connection,
-    for_date: date,
-    window_start: datetime,
-    window_end: datetime,
-    predicted_pct: float,
-    basis_weeks: int,
-    basis_spread: float | None = None,
-    made_at: datetime | None = None,
-) -> int:
-    """Record a prediction as it was shown, returning its id.
-
-    predicted_pct is what the user actually saw, not something to recompute
-    later -- the model will change, and recomputing would score today's model
-    against decisions it never made.
-    """
-    made_at = made_at or datetime.now(timezone.utc)
-    cursor = connection.execute(
-        """INSERT INTO predictions
-           (made_at, for_date, window_start, window_end, predicted_pct,
-            basis_weeks, basis_spread)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (
-            made_at.astimezone(timezone.utc).isoformat(),
-            for_date.isoformat(),
-            window_start.astimezone(timezone.utc).isoformat(),
-            window_end.astimezone(timezone.utc).isoformat(),
-            predicted_pct,
-            basis_weeks,
-            basis_spread,
-        ),
-    )
-    connection.commit()
-    return cursor.lastrowid
-
-
 def log_prediction(
     connection: sqlite3.Connection,
     for_date: date,
@@ -202,24 +182,31 @@ def log_prediction(
     predicted_pct: float,
     basis_weeks: int,
     basis_spread: float | None = None,
+    section: str | None = None,
 ) -> int:
     """Record a window as shown, once. Returns the row id either way.
 
     Idempotent on (for_date, window_start): the dashboard re-renders on every
     load and every 60s poll, and each of those is the same suggestion, not a
     new one.
+
+    predicted_pct is what the user actually saw, not something to recompute
+    later -- the model will change, and recomputing would score today's model
+    against decisions it never made. The section is stored rather than derived
+    on read, because deriving it needs DST-aware local time that SQLite cannot
+    do; storing it lets the tally be a plain GROUP BY.
     """
     connection.execute(
         """INSERT OR IGNORE INTO predictions
            (made_at, for_date, window_start, window_end, predicted_pct,
-            basis_weeks, basis_spread)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            basis_weeks, basis_spread, section)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             datetime.now(timezone.utc).isoformat(),
             for_date.isoformat(),
             window_start.astimezone(timezone.utc).isoformat(),
             window_end.astimezone(timezone.utc).isoformat(),
-            predicted_pct, basis_weeks, basis_spread,
+            predicted_pct, basis_weeks, basis_spread, section,
         ),
     )
     connection.commit()
@@ -319,6 +306,71 @@ def booking_on(connection: sqlite3.Connection, for_date: date) -> dict | None:
 def delete_booking(connection: sqlite3.Connection, for_date: date) -> None:
     connection.execute("DELETE FROM bookings WHERE for_date = ?", (for_date.isoformat(),))
     connection.commit()
+
+
+def section_outcomes(connection: sqlite3.Connection) -> dict[str, dict]:
+    """How suggestions in each part of the day have fared, aggregated in SQL.
+
+    Three tables' worth of state -- what was suggested, what was confirmed,
+    what was answered -- collapse into one grouped join. Counting rows across
+    joined tables is what a database is for; doing it in Python meant loading
+    every row to increment counters.
+
+    Grouping by the stored section rather than deriving it here is deliberate:
+    the section depends on DST-aware local time, which SQLite cannot compute,
+    so it is worked out in Python at write time and simply grouped here.
+    """
+    rows = connection.execute(
+        """SELECT p.section,
+                  COUNT(*)                          AS shown,
+                  COUNT(b.event_id)                 AS booked,
+                  COUNT(f.went)                     AS answered,
+                  COALESCE(SUM(f.went), 0)          AS attended,
+                  COALESCE(SUM(1 - f.went), 0)      AS skipped
+           FROM predictions p
+           LEFT JOIN bookings b ON b.prediction_id = p.id
+           LEFT JOIN feedback f ON f.prediction_id = p.id
+           WHERE p.section IS NOT NULL
+           GROUP BY p.section"""
+    ).fetchall()
+    return {row["section"]: {k: row[k] for k in row.keys() if k != "section"} for row in rows}
+
+
+def day_statistics(connection: sqlite3.Connection, start: datetime, end: datetime):
+    """Peak, average and sample count over a time range, computed in SQL.
+
+    The bounds arrive already converted to UTC, so nothing here depends on a
+    timezone -- which is exactly why this aggregation can live in the database
+    while the weekday curve cannot.
+    """
+    row = connection.execute(
+        """WITH scoped AS (
+               SELECT observed_at, "count", capacity,
+                      CAST("count" AS REAL) / capacity AS pct
+               FROM readings
+               WHERE observed_at >= ? AND observed_at < ? AND capacity > 0
+           ),
+           ranked AS (
+               SELECT *, ROW_NUMBER() OVER (ORDER BY "count" DESC, observed_at) AS rank
+               FROM scoped
+           )
+           SELECT (SELECT "count"      FROM ranked WHERE rank = 1) AS peak_count,
+                  (SELECT capacity     FROM ranked WHERE rank = 1) AS peak_capacity,
+                  (SELECT observed_at  FROM ranked WHERE rank = 1) AS peak_at,
+                  AVG(pct)                                         AS average_pct,
+                  COUNT(*)                                         AS samples
+           FROM scoped""",
+        (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()),
+    ).fetchone()
+    if not row or not row["samples"]:
+        return None
+    return {
+        "peak_count": row["peak_count"],
+        "peak_capacity": row["peak_capacity"],
+        "peak_at": datetime.fromisoformat(row["peak_at"]),
+        "average_pct": row["average_pct"],
+        "samples": row["samples"],
+    }
 
 
 def prediction_outcomes(connection: sqlite3.Connection) -> list[dict]:

@@ -5,6 +5,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from statistics import mean, median
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from pathlib import Path
@@ -226,7 +227,7 @@ def quietest_window(readings, midnight, window, minutes=60, min_samples=4):
     return best
 
 
-def day_summary(readings, midnight, day_hours):
+def day_summary(readings, midnight, day_hours, connection=None):
     """Peak, quietest and average for a day already gone.
 
     Scoped to opening hours: the gym reads zero all night, and including
@@ -247,13 +248,33 @@ def day_summary(readings, midnight, day_hours):
                 during_open.append(reading)
 
     scoped = during_open or usable
-    peak = max(scoped, key=lambda r: r.count)
+
+    # The open-hours bounds are worked out here because they depend on
+    # DST-aware local time; once they are UTC instants the aggregation itself
+    # is timezone-free, so the database does it.
+    stats = None
+    if connection is not None and window:
+        opens, closes = window
+        stats = store.day_statistics(
+            connection,
+            midnight + timedelta(minutes=opens),
+            midnight + timedelta(minutes=closes),
+        )
+    if stats is None:
+        peak = max(scoped, key=lambda r: r.count)
+        stats = {
+            "peak_count": peak.count,
+            "peak_capacity": peak.capacity,
+            "peak_at": peak.observed_at,
+            "average_pct": mean(percentage(r.count, r.capacity) for r in scoped),
+        }
+
     return {
-        "peak": peak,
-        "peak_pct": percentage(peak.count, peak.capacity),
-        "peak_at": peak.observed_at.astimezone(LOCAL_TZ),
+        "peak": SimpleNamespace(count=stats["peak_count"], capacity=stats["peak_capacity"]),
+        "peak_pct": percentage(stats["peak_count"], stats["peak_capacity"]),
+        "peak_at": stats["peak_at"].astimezone(LOCAL_TZ),
         "quietest": quietest_window(scoped, midnight, window),
-        "average_pct": mean(percentage(r.count, r.capacity) for r in scoped),
+        "average_pct": stats["average_pct"],
         "open_only": bool(during_open),
     }
 
@@ -388,6 +409,7 @@ def api_book():
         prediction_id = store.log_prediction(
             connection, today, start, end, chosen["predictedPct"],
             (view.get("typical") or {}).get("weeks", 0), chosen.get("spread"),
+            chosen.get("section"),
         )
         event_id = google_auth.create_event(
             access_token, calendar_id, start, end,
@@ -555,8 +577,14 @@ def day_view(connection, viewed, today, earliest_day):
                 "openOnly": found["open_only"],
             }
 
+    # Only the rolling window's worth of history can affect the curve, so
+    # bound the query rather than loading every reading ever recorded. A
+    # generous week of slack keeps the coarse UTC bound safe despite the
+    # precise weekday filter being local-time and DST-aware.
+    lookback = midnight - timedelta(weeks=evaluate.WINDOW_INSTANCES + 1)
     bands, weeks, spread = evaluate.weekday_bands(
-        store.all_readings(connection), viewed, LOCAL_TZ, BUCKET_MINUTES
+        store.between(connection, lookback, midnight + timedelta(days=1)),
+        viewed, LOCAL_TZ, BUCKET_MINUTES,
     )
     typical = None
     if weeks >= MIN_WEEKDAY_INSTANCES:
@@ -587,16 +615,14 @@ def day_view(connection, viewed, today, earliest_day):
             busy=busy_today(midnight, connection),
             not_before=datetime.now(LOCAL_TZ),
         )
-        history = policy.outcomes_by_section(
-            store.prediction_outcomes(connection), LOCAL_TZ
-        )
+        history = store.section_outcomes(connection)
         windows = []
         for window in found.windows:
             # recorded as shown: the model will change, and recomputing later
             # would score today's model against a decision it never made
             store.log_prediction(
                 connection, viewed, window.start, window.end,
-                window.predicted_pct, weeks, window.spread,
+                window.predicted_pct, weeks, window.spread, window.section,
             )
             windows.append({
                 "start": window.start.isoformat(),
