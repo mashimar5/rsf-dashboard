@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import threading
 import time
@@ -16,6 +17,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import evaluate
 import google_auth
 import hours
+import intent
 import policy
 import store
 from density import fetch_reading, percentage
@@ -464,6 +466,42 @@ def api_book():
     return jsonify({"booked": {"start": chosen["start"], "end": chosen["end"]}})
 
 
+def stored_preferences(connection):
+    raw = store.get_state(connection, "preferences")
+    return json.loads(raw) if raw else None
+
+
+@app.route("/api/preferences", methods=["POST"])
+def api_preferences():
+    """Turn a sentence into policy parameters.
+
+    The model runs here and only here. What it returns is validated, stored as
+    plain numbers, and everything downstream reads those numbers -- so a
+    suggestion is never one model call away from being different.
+    """
+    if not signed_in_email():
+        return jsonify({"error": "not signed in"}), 401
+    if not intent.available():
+        return jsonify({"error": "not configured"}), 503
+
+    text = (request.get_json(silent=True) or {}).get("text", "")
+    parsed = intent.parse(text)
+    if parsed is None:
+        return jsonify({"error": "could not read that as a preference"}), 422
+
+    connection = db()
+    store.set_state(connection, "preferences", parsed.model_dump_json())
+    return jsonify({"preferences": json.loads(parsed.model_dump_json())})
+
+
+@app.route("/api/preferences", methods=["DELETE"])
+def api_clear_preferences():
+    if not signed_in_email():
+        return jsonify({"error": "not signed in"}), 401
+    store.set_state(db(), "preferences", "")
+    return jsonify({"preferences": None})
+
+
 @app.route("/api/feedback", methods=["POST"])
 def api_feedback():
     if not signed_in_email():
@@ -712,6 +750,8 @@ def day_view(connection, viewed, today, earliest_day):
 
     # Suggestions are for today only: "when should I go" is not a question
     # about a day that is over, and the stat tiles already say what happened.
+    preferences = stored_preferences(connection)
+
     suggestions = None
     if is_today and weeks < MIN_WEEKDAY_INSTANCES:
         # weekday_bands returns bands from any number of instances; the
@@ -729,6 +769,7 @@ def day_view(connection, viewed, today, earliest_day):
             bands, midnight, day_hours, BUCKET_MINUTES,
             busy=busy_today(midnight, connection),
             not_before=datetime.now(LOCAL_TZ),
+            preferences=preferences,
         )
         history = store.section_outcomes(connection)
         windows = []
@@ -783,6 +824,8 @@ def day_view(connection, viewed, today, earliest_day):
             (datetime.now(LOCAL_TZ) - reading.observed_at).total_seconds() > STALE_AFTER_SECONDS
             if is_today and reading else False
         ),
+        "preferences": preferences,
+        "preferencesAvailable": intent.available(),
         "auth": {
             "signedIn": bool(signed_in_email()),
             "email": signed_in_email(),

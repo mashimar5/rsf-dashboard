@@ -137,3 +137,11 @@ h2 { font-size: .8125rem; font-weight: 600; color: var(--dim); margin: 0;
 
 .card.warn { border-color: #c2410c; color: #c2410c; font-size: .875rem;
              padding: .9rem 1.5rem; }
+
+.prefs { margin-top: 1rem; padding-top: .9rem; border-top: 1px solid var(--line); }
+.prefs form { display: flex; gap: .5rem; }
+.prefs input { flex: 1; font: inherit; font-size: .8125rem; padding: .4rem .6rem;
+               border: 1px solid var(--line); border-radius: 8px;
+               background: var(--card); color: var(--fg); }
+.prefs .understood { display: flex; align-items: baseline; justify-content: space-between;
+                     gap: 1rem; font-size: .8125rem; color: var(--dim); }

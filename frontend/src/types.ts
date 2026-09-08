@@ -80,6 +80,17 @@ export interface FeedbackPrompt {
   answered: boolean | null
 }
 
+export interface Preferences {
+  session_minutes: number | null
+  earliest_hour: number | null
+  latest_hour: number | null
+  max_crowding_pct: number | null
+  travel_buffer_minutes: number | null
+  sessions_per_week: number | null
+  /** What the model understood, shown back so it can be corrected. */
+  summary: string
+}
+
 export interface Auth {
   signedIn: boolean
   email: string | null
@@ -114,6 +125,9 @@ export interface DayView {
   /** True when the newest reading is old enough that collection is
    *  probably broken. Occupancy cannot be backfilled, so silence is costly. */
   stale: boolean
+  preferences: Preferences | null
+  /** False when no API key is configured; the input is hidden. */
+  preferencesAvailable: boolean
   auth: Auth
   hours: Hours | null
 }

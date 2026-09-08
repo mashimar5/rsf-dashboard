@@ -1,11 +1,14 @@
 import { useState } from 'react'
-import type { Auth, Booking, SuggestionSet } from '../types'
+import type { Auth, Booking, Preferences, SuggestionSet } from '../types'
+import { PreferenceInput } from './PreferenceInput'
 import { clock, levelColor, pct, sameInstant } from '../lib/format'
 
 interface Props {
   suggestions: SuggestionSet
   auth: Auth
   booking: Booking | null
+  preferences: Preferences | null
+  preferencesAvailable: boolean
   onChange: () => void
 }
 
@@ -14,7 +17,8 @@ async function signOut() {
   window.location.reload()
 }
 
-export function Suggestions({ suggestions, auth, booking, onChange }: Props) {
+export function Suggestions({ suggestions, auth, booking, preferences,
+                             preferencesAvailable, onChange }: Props) {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -89,6 +93,10 @@ export function Suggestions({ suggestions, auth, booking, onChange }: Props) {
         </ul>
       ) : (
         <p className="empty">{suggestions.refusal ?? 'Nothing to suggest right now.'}</p>
+      )}
+
+      {auth.signedIn && preferencesAvailable && (
+        <PreferenceInput preferences={preferences} onChange={onChange} />
       )}
 
       {error && <p className="hint err">{error}</p>}

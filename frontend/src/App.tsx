@@ -113,7 +113,9 @@ export default function App() {
 
       {day.suggestions && (
         <Suggestions suggestions={day.suggestions} auth={day.auth}
-                     booking={day.booking} onChange={() => load()} />
+                     booking={day.booking} preferences={day.preferences}
+                     preferencesAvailable={day.preferencesAvailable}
+                     onChange={() => load()} />
       )}
 
       <div className="card">

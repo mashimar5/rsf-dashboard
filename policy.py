@@ -54,12 +54,26 @@ class Suggestions:
     refusal: str | None = None
 
 
+def _from_preferences(preferences) -> dict:
+    """Preference fields the window search understands, ignoring the rest."""
+    if not preferences:
+        return {}
+    chosen = {
+        "session": preferences.get("session_minutes"),
+        "earliest_hour": preferences.get("earliest_hour"),
+        "latest_hour": preferences.get("latest_hour"),
+        "travel_buffer": preferences.get("travel_buffer_minutes"),
+    }
+    return {k: v for k, v in chosen.items() if v is not None}
+
+
 def overlaps(start, end, other_start, other_end) -> bool:
     return start < other_end and other_start < end
 
 
 def candidate_windows(bands, midnight, day_hours, bucket_minutes,
-                      session=SESSION_MINUTES, busy=(), not_before=None):
+                      session=SESSION_MINUTES, busy=(), not_before=None,
+                      earliest_hour=None, latest_hour=None, travel_buffer=0):
     """Every window that could legitimately be suggested, unranked.
 
     Windows start on bucket boundaries: the forecast has that resolution, and
@@ -77,6 +91,20 @@ def candidate_windows(bands, midnight, day_hours, bucket_minutes,
         closes += 24 * 60
     latest_start = closes - session - WIND_DOWN_MINUTES
 
+    # Stated preferences narrow the window; they never widen it past opening
+    # hours, which are a fact rather than a taste.
+    if earliest_hour is not None:
+        opens = max(opens, earliest_hour * 60)
+    if latest_hour is not None:
+        latest_start = min(latest_start, latest_hour * 60)
+
+    # A commitment needs clearance either side: back-to-back with a meeting is
+    # not free time, it is a sprint.
+    padded = [
+        (start - timedelta(minutes=travel_buffer), end + timedelta(minutes=travel_buffer))
+        for start, end in busy
+    ]
+
     windows = []
     start_minute = -(-opens // bucket_minutes) * bucket_minutes   # round up
     while start_minute <= latest_start:
@@ -89,7 +117,7 @@ def candidate_windows(bands, midnight, day_hours, bucket_minutes,
             end = start + timedelta(minutes=session)
             already_passed = not_before is not None and start < not_before
             if not already_passed and not any(
-                overlaps(start, end, b_start, b_end) for b_start, b_end in busy
+                overlaps(start, end, b_start, b_end) for b_start, b_end in padded
             ):
                 windows.append(
                     Window(
@@ -104,6 +132,7 @@ def candidate_windows(bands, midnight, day_hours, bucket_minutes,
 
 
 def suggest(bands, midnight, day_hours, bucket_minutes, busy=(), not_before=None,
+            preferences=None,
             limit=MAX_SUGGESTIONS, ceiling=CROWDING_CEILING):
     """The quietest non-overlapping windows, or a reason there are none.
 
@@ -117,10 +146,12 @@ def suggest(bands, midnight, day_hours, bucket_minutes, busy=(), not_before=None
         return Suggestions([], refusal="closed")
 
     candidates = candidate_windows(bands, midnight, day_hours, bucket_minutes,
-                                   busy=busy, not_before=not_before)
+                                   busy=busy, not_before=not_before,
+                                   **_from_preferences(preferences))
     if not candidates:
         return Suggestions([], refusal="no free window long enough")
 
+    ceiling = (preferences or {}).get("max_crowding_pct") or ceiling
     within_ceiling = [w for w in candidates if w.predicted_pct <= ceiling]
     if not within_ceiling:
         return Suggestions([], refusal="every window is predicted busier than the ceiling")
@@ -145,6 +176,7 @@ def section_of(start_minute: int):
 
 
 def suggest_by_section(bands, midnight, day_hours, bucket_minutes, busy=(), not_before=None,
+            preferences=None,
                        ceiling=CROWDING_CEILING):
     """The quietest eligible window in each part of the day.
 
@@ -157,10 +189,12 @@ def suggest_by_section(bands, midnight, day_hours, bucket_minutes, busy=(), not_
     if not day_hours or day_hours.opens is None:
         return Suggestions([], refusal="closed")
 
+    ceiling = (preferences or {}).get("max_crowding_pct") or ceiling
     candidates = [
         window
         for window in candidate_windows(bands, midnight, day_hours, bucket_minutes,
-                                        busy=busy, not_before=not_before)
+                                        busy=busy, not_before=not_before,
+                                        **_from_preferences(preferences))
         if window.predicted_pct <= ceiling
     ]
     if not candidates:

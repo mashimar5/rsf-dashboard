@@ -7,7 +7,7 @@ weight rooms, and an agent that suggests when to go.
 
 **Live: [rsf-dashboard.fly.dev](https://rsf-dashboard.fly.dev)**
 
-Python · Flask · Postgres · SQL · React 19 · TypeScript · Vite · Google OAuth · Docker · Fly.io · GitHub Actions
+Python · Flask · Postgres · SQL · React 19 · TypeScript · Vite · Claude API · Google OAuth · Docker · Fly.io · GitHub Actions
 
 Shows how full the weight rooms are right now, the day's occupancy curve, and
 any previous day's. A collector records a reading every five minutes, so the
@@ -137,6 +137,7 @@ works locally only because it was installed once and never declared.
 | `/api/hours` | What the hours scraper parsed, which table each day resolved to, and the cache age. Use this when the hours line disappears. |
 | `/api/book` | `POST` writes a suggested window to the calendar; `DELETE` cancels it. Signed in only. |
 | `/api/feedback` | `POST` records whether a booked session happened. |
+| `/api/preferences` | `POST` turns a sentence into scheduling parameters; `DELETE` clears them. |
 | `/auth/google`, `/auth/callback`, `/auth/logout` | Google sign-in. |
 | `/health` | Liveness. Returns 503 only for conditions a restart could fix; Fly's health check watches this. |
 | `/health/freshness` | Returns 503 when readings have stopped. For an external uptime monitor, which pages a human rather than restarting. |
@@ -153,6 +154,7 @@ works locally only because it was installed once and never declared.
 | `PORT` | `5001` | Web server port. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | OAuth client. Calendar features are simply absent without them. |
 | `ALLOWED_EMAILS` | empty | Comma-separated allowlist. Empty admits nobody, so a misconfigured deploy fails closed. |
+| `ANTHROPIC_API_KEY` | — | Enables free-text preferences. Absent, the input is hidden and everything else works. |
 | `SECRET_KEY` | — | Signs the session cookie. |
 | `TOKEN_ENCRYPTION_KEY` | — | Fernet key encrypting stored refresh tokens. |
 
@@ -222,6 +224,7 @@ for current occupancy.
 | `evaluate.py` | The typical-weekday curve, dispersion, scoring and backtesting. |
 | `policy.py` | Turning a forecast into suggested windows. |
 | `google_auth.py` | OAuth, free/busy, and calendar writes. |
+| `intent.py` | Free-text preferences to validated parameters, via the Claude API. |
 | `app.py` | Flask routes and the day view model. |
 | `frontend/src/App.tsx` | Top-level view: fetches `/api/day`, owns the selected date. |
 | `frontend/src/components/` | `Chart`, `StatTiles`, `DayNav`, `Suggestions`, `Feedback`. |
@@ -313,6 +316,22 @@ flip it into sensitive-scope territory.
 public. Filtering suggestions by a calendar leaks that calendar: the difference
 between the publicly computable quietest windows and the ones shown is exactly
 the user's schedule, so gating was not optional.
+
+**The model sits at the edge, not in the loop.** `intent.py` is the only place
+that calls an LLM, and it runs once — when you describe what you want in
+words. What it returns is validated and stored as plain numbers, and every
+downstream decision reads those numbers. A suggestion is therefore never one
+model call away from being different, the policy stays unit-testable without a
+network, and the feature degrades to "hidden" rather than "broken" when no API
+key is set.
+
+Structured output guarantees the *shape* of what comes back, not its sense —
+`session_minutes: 600` is schema-valid nonsense. Ranges are enforced after
+parsing: implausible lengths clamp, impossible hours are dropped rather than
+clamped (clamping 99 to 23 would invent a preference nobody stated), and a
+crowding ceiling written as `60` is read as 60% rather than rejected. The model
+also returns a one-sentence summary of what it understood, shown back so a
+misreading is visible rather than silent.
 
 **The agent proposes and waits.** Nothing reaches the calendar without an
 explicit click, and `/api/book` only accepts a window the policy is currently
