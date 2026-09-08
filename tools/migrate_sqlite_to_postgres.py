@@ -1,7 +1,8 @@
 """Copy a SQLite readings.db into Postgres.
 
-Run once per database. Idempotent on readings: it refuses to import if the
-target already has rows, so a repeated run cannot silently double the history.
+Safe to run repeatedly, and safe to run while the collector is already
+writing to the target: readings are keyed by instant, so re-importing skips
+rows that are already there rather than doubling the history.
 
     DATABASE_URL=... python tools/migrate_sqlite_to_postgres.py path/to/readings.db
 """
@@ -33,18 +34,19 @@ def main(path):
     source.row_factory = sqlite3.Row
 
     with store.connection() as target:
-        existing = store.count_rows(target)
-        if existing:
-            print(f"refusing: target already has {existing} readings")
-            return 1
-
+        before = store.count_rows(target)
         readings = rows(source, "readings")
         with target.cursor() as cursor:
             cursor.executemany(
-                "INSERT INTO readings (observed_at, count, capacity) VALUES (%s, %s, %s)",
+                """INSERT INTO readings (observed_at, count, capacity)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (observed_at) DO NOTHING""",
                 [(when(r["observed_at"]), r["count"], r["capacity"]) for r in readings],
             )
-        print(f"readings: {len(readings)}")
+        target.commit()
+        after = store.count_rows(target)
+        print(f"source rows: {len(readings)} | target {before} -> {after}"
+              f" ({after - before} inserted, {len(readings) - (after - before)} already present)")
 
         for row in rows(source, "google_tokens"):
             target.execute(
@@ -77,7 +79,7 @@ def main(path):
         print(f"tokens: {len(rows(source, 'google_tokens'))}"
               f" | app_state: {len(rows(source, 'app_state'))}")
         print(f"verified: {total} readings, {span['lo']} .. {span['hi']}")
-        return 0 if total == len(readings) else 1
+        return 0 if total >= len(readings) else 1
 
 
 if __name__ == "__main__":

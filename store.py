@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS readings (
     count       INTEGER NOT NULL,
     capacity    INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS readings_observed_at ON readings (observed_at);
+-- One sample per instant. Makes duplicate collection impossible rather than
+-- merely unlikely, and lets the SQLite import be re-run safely.
+CREATE UNIQUE INDEX IF NOT EXISTS readings_observed_at ON readings (observed_at);
 
 CREATE TABLE IF NOT EXISTS predictions (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
