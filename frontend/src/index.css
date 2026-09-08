@@ -154,3 +154,12 @@ h2 { font-size: .8125rem; font-weight: 600; color: var(--dim); margin: 0;
 .exchange .q { margin: 0 0 .35rem; font-size: .8125rem; color: var(--dim); }
 .exchange .a { margin: 0; font-size: .9375rem; line-height: 1.5; }
 .exchange .tools { margin: .4rem 0 0; font-size: .6875rem; color: var(--dim); }
+
+.chat .transcript { max-height: 26rem; overflow-y: auto; margin-bottom: .9rem; }
+.chat .turn { margin-bottom: .9rem; }
+.chat .turn p { margin: 0; font-size: .875rem; line-height: 1.55; white-space: pre-wrap; }
+.chat .turn.user p { color: var(--dim); }
+.chat .turn.user p::before { content: "› "; }
+.chat .turn.assistant p { color: var(--fg); }
+.chat .turn .tools { margin-top: .35rem; font-size: .6875rem; color: var(--dim); }
+.chat .turn .thinking { color: var(--dim); font-style: italic; }

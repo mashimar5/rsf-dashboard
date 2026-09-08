@@ -1,14 +1,15 @@
-"""Ad hoc questions about the occupancy history.
+"""Conversation about the occupancy history: patterns, comparisons, forecasts.
 
-Only worth having for questions a fixed widget cannot answer in advance --
-"was last Tuesday busier than usual", "Monday versus Friday evenings". The
-dashboard already answers "how busy is it" and "when should I go" better than
-a sentence could, and those deliberately stay where they are.
+The shape of the data is small enough to hand over whole. A weekday-by-hour
+grid is 7 x 24 = 168 cells however long collection runs -- about 550 tokens --
+so the model can hold the entire picture at once and reason over it, rather
+than guessing which slice to query. That is what makes open-ended questions
+("what patterns do you see", "how busy will Thursday evening be") answerable
+at all; a fixed set of lookups can answer "what was X" and nothing more.
 
-The model gets tools, not a database. Each tool is a vetted query with typed
-arguments, so the worst a confused model can do is ask a sensible question of
-the wrong slice -- it cannot write SQL, cannot reach another table, and cannot
-write anything at all.
+Precise tools remain for exact figures over a chosen slice. The model gets
+tools and an overview, never a database: it cannot write SQL, reach another
+table, or write anything at all.
 """
 
 import json
@@ -42,6 +43,73 @@ def _local_midnight(day: date) -> datetime:
 
 def _parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+@beta_tool
+def data_overview() -> str:
+    """The whole picture: average occupancy for every weekday and hour.
+
+    Call this first for any question about patterns, comparisons or what to
+    expect. It returns the full grid, so you can reason over the shape of the
+    week directly instead of querying slice by slice.
+    """
+    with store.connection() as conn:
+        grid = conn.execute(
+            """WITH local AS (
+                   SELECT observed_at AT TIME ZONE %(zone)s AS t,
+                          count::float / capacity AS pct
+                   FROM readings WHERE capacity > 0
+               )
+               SELECT EXTRACT(ISODOW FROM t)::int AS dow,
+                      EXTRACT(HOUR FROM t)::int AS hour,
+                      ROUND(AVG(pct)::numeric, 3) AS mean,
+                      ROUND(MAX(pct)::numeric, 3) AS peak,
+                      COUNT(DISTINCT t::date) AS days
+               FROM local GROUP BY 1, 2 ORDER BY 1, 2""",
+            {"zone": str(LOCAL_TZ)},
+        ).fetchall()
+        days = conn.execute(
+            """WITH local AS (
+                   SELECT observed_at AT TIME ZONE %(zone)s AS t,
+                          count::float / capacity AS pct
+                   FROM readings WHERE capacity > 0
+               )
+               SELECT t::date AS day,
+                      ROUND(AVG(pct)::numeric, 3) AS mean,
+                      ROUND(MAX(pct)::numeric, 3) AS peak,
+                      COUNT(*) AS samples
+               FROM local GROUP BY 1 ORDER BY 1 DESC LIMIT 90""",
+            {"zone": str(LOCAL_TZ)},
+        ).fetchall()
+
+    if not grid:
+        return json.dumps({"error": "no readings recorded yet"})
+    return json.dumps({
+        "capacity": 150,
+        "today": datetime.now(LOCAL_TZ).date().isoformat(),
+        "note": (
+            "Occupancy is a fraction of capacity. The sensor counts entries minus"
+            " exits, so values above 1.0 are real. 'days' is how many distinct"
+            " days contributed to a cell -- treat a cell backed by one or two days"
+            " as weak evidence."
+        ),
+        "weekday_hour_grid": {
+            "columns": ["weekday", "hour", "mean", "peak", "days"],
+            "rows": [
+                [WEEKDAYS[r["dow"] - 1], r["hour"], float(r["mean"]),
+                 float(r["peak"]), r["days"]]
+                for r in grid
+            ],
+        },
+        "by_day": {
+            "columns": ["date", "weekday", "mean", "peak", "samples"],
+            "rows": [
+                [r["day"].isoformat(), WEEKDAYS[r["day"].weekday()],
+                 float(r["mean"]), float(r["peak"]), r["samples"]]
+                for r in days
+            ],
+        },
+    })
 
 
 @beta_tool
@@ -202,21 +270,41 @@ def my_sessions() -> str:
     ]})
 
 
-TOOLS = [data_range, occupancy_stats, typical_weekday_curve, my_sessions]
+TOOLS = [data_overview, data_range, occupancy_stats, typical_weekday_curve, my_sessions]
 
-SYSTEM = """You answer questions about occupancy data for the UC Berkeley RSF \
-weight rooms, using the tools provided.
+SYSTEM = """You are an analyst for a dataset of gym occupancy readings from the \
+UC Berkeley RSF weight rooms. You discuss patterns, make comparisons, and
+forecast what to expect, in conversation.
 
-- Occupancy is a percentage of a 150-person capacity. Readings are taken every
-  few minutes by a doorway sensor that counts entries minus exits, so counts
-  above capacity are real, not errors.
-- Call data_range first whenever a question involves dates, so you do not
-  reason about days that were never recorded.
-- Answer in one or two short sentences with the actual numbers. No preamble.
-- If the data cannot answer the question -- too few days, nothing recorded --
-  say so plainly rather than estimating. Saying "there isn't enough data yet"
-  is a good answer.
-- You cannot see the user's calendar or change any setting. If asked, say so."""
+The data
+- Occupancy is a fraction of a 150-person capacity. A doorway sensor counts
+  entries minus exits every few minutes, so values above 1.0 are real.
+- Call data_overview first for almost anything. It gives you the entire
+  weekday-by-hour grid plus per-day summaries, so you can look for patterns
+  yourself rather than querying blindly. Use the narrower tools afterwards
+  when you need an exact figure for a specific slice.
+
+How to answer
+- Lead with the finding, then the numbers that support it. No preamble, no
+  restating the question.
+- Quantify. "Evenings peak around 85% between 4 and 7pm" beats "evenings are
+  busy".
+- When asked what to expect, give a figure and say what it rests on: "around
+  70%, based on three Thursdays". You are extrapolating from a short history,
+  not running a model, and should say so when it matters.
+- Sample size governs confidence. A cell backed by one or two days is weak
+  evidence; say that rather than presenting it as a finding. "There isn't
+  enough data yet to tell" is a good answer when it is true.
+- Volunteer a pattern you notice even if it was not asked about, when it is
+  genuinely interesting. Do not pad with ones that are not.
+- Be willing to say a pattern is absent. Not every question has a finding
+  behind it.
+
+Limits
+- You cannot see the user's calendar, change settings, or book anything. Say
+  so if asked.
+- Do not invent causes. You can note that occupancy drops after 8pm; you
+  cannot know why unless the data shows it."""
 
 
 def available() -> bool:
@@ -234,9 +322,24 @@ def within_rate_limit() -> bool:
     return True
 
 
-def answer(question: str, client=None) -> dict | None:
-    """Answer one question. None when it could not be answered at all."""
-    if not question or not question.strip():
+MAX_TURNS = 12
+
+
+def answer(messages, client=None) -> dict | None:
+    """Continue a conversation. None when it could not be answered at all.
+
+    `messages` is the exchange so far, oldest first. It is trimmed to the most
+    recent turns: an unbounded history would grow the cost of every follow-up
+    without improving the answer.
+    """
+    if isinstance(messages, str):
+        messages = [{"role": "user", "content": messages}]
+    messages = [
+        {"role": m["role"], "content": str(m["content"]).strip()}
+        for m in messages
+        if m.get("role") in ("user", "assistant") and str(m.get("content", "")).strip()
+    ][-MAX_TURNS:]
+    if not messages or messages[-1]["role"] != "user":
         return None
     try:
         client = client or anthropic.Anthropic()
@@ -245,7 +348,7 @@ def answer(question: str, client=None) -> dict | None:
             max_tokens=MAX_TOKENS,
             system=SYSTEM,
             tools=TOOLS,
-            messages=[{"role": "user", "content": question.strip()}],
+            messages=messages,
         )
         used, final = [], None
         for message in runner:

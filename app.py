@@ -526,11 +526,17 @@ def api_ask():
         return jsonify({"error": "too many questions in the last hour"}), 429
 
     payload = request.get_json(silent=True) or {}
-    question = (payload.get("question") or "").strip()
-    if not question:
+    # The client keeps the transcript; the server trims it. History from a
+    # client is not trusted beyond its shape -- roles are filtered and the
+    # length is capped in ask.answer.
+    messages = payload.get("messages")
+    if not messages:
+        question = (payload.get("question") or "").strip()
+        messages = [{"role": "user", "content": question}] if question else None
+    if not messages:
         return jsonify({"error": "no question given"}), 400
 
-    result = ask.answer(question)
+    result = ask.answer(messages)
     if result is None:
         return jsonify({"error": "could not answer that"}), 502
     return jsonify(result)

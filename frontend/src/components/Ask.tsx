@@ -1,69 +1,94 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
-interface Exchange {
-  question: string
-  answer: string
-  toolsUsed: string[]
+interface Turn {
+  role: 'user' | 'assistant'
+  content: string
+  toolsUsed?: string[]
 }
 
-/** For questions no fixed widget can anticipate — comparisons across
- *  weekdays, whether a day was unusual. Everything the dashboard already
- *  answers directly stays where it is. */
+/** A conversation about the data: patterns, comparisons, what to expect.
+ *  The dashboard already answers "how busy is it" and "when should I go"
+ *  better than a sentence could; this is for the open-ended questions. */
 export function Ask() {
-  const [question, setQuestion] = useState('')
-  const [history, setHistory] = useState<Exchange[]>([])
+  const [turns, setTurns] = useState<Turn[]>([])
+  const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const endRef = useRef<HTMLDivElement>(null)
 
-  async function submit(event: React.FormEvent) {
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [turns, busy])
+
+  async function send(event: React.FormEvent) {
     event.preventDefault()
-    const asked = question.trim()
-    if (!asked) return
+    const question = draft.trim()
+    if (!question || busy) return
+
+    const next: Turn[] = [...turns, { role: 'user', content: question }]
+    setTurns(next)
+    setDraft('')
     setBusy(true)
     setError(null)
+
     const response = await fetch('/api/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: asked }),
+      // the whole exchange goes back, so follow-ups need no restating
+      body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })) }),
     })
     setBusy(false)
+
     if (!response.ok) {
       setError((await response.json().catch(() => ({}))).error ?? 'Could not answer that')
+      setTurns(turns)   // drop the unanswered question rather than stranding it
       return
     }
     const result = await response.json()
-    setHistory((prior) => [{ question: asked, ...result }, ...prior].slice(0, 5))
-    setQuestion('')
+    setTurns([...next, { role: 'assistant', content: result.answer, toolsUsed: result.toolsUsed }])
   }
 
   return (
-    <div className="card">
-      <div className="cardhead"><h2>Ask about the data</h2></div>
+    <div className="card chat">
+      <div className="cardhead">
+        <h2>Ask about the data</h2>
+        {turns.length > 0 && (
+          <button className="act" onClick={() => { setTurns([]); setError(null) }}>Clear</button>
+        )}
+      </div>
 
-      <form className="askbox" onSubmit={submit}>
-        <input
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder="e.g. are Monday evenings busier than Friday evenings?"
-          disabled={busy}
-        />
-        <button className="act" type="submit" disabled={busy || !question.trim()}>
-          {busy ? '…' : 'Ask'}
-        </button>
-      </form>
+      {turns.length === 0 && !busy && (
+        <p className="hint">
+          Try: “what patterns do you see?” · “how busy will Thursday evening be?”
+          · “is the weekend different from weekdays?”
+        </p>
+      )}
+
+      <div className="transcript">
+        {turns.map((turn, index) => (
+          <div key={index} className={`turn ${turn.role}`}>
+            <p>{turn.content}</p>
+            {turn.toolsUsed && turn.toolsUsed.length > 0 && (
+              /* shown so an answer can be checked against what it actually read */
+              <p className="tools">read: {[...new Set(turn.toolsUsed)].join(', ')}</p>
+            )}
+          </div>
+        ))}
+        {busy && <div className="turn assistant"><p className="thinking">Looking…</p></div>}
+        <div ref={endRef} />
+      </div>
 
       {error && <p className="hint err">{error}</p>}
 
-      {history.map((exchange, index) => (
-        <div className="exchange" key={index}>
-          <p className="q">{exchange.question}</p>
-          <p className="a">{exchange.answer}</p>
-          {exchange.toolsUsed.length > 0 && (
-            /* shown so an answer can be checked against what it actually read */
-            <p className="tools">read: {[...new Set(exchange.toolsUsed)].join(', ')}</p>
-          )}
-        </div>
-      ))}
+      <form className="askbox" onSubmit={send}>
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={turns.length ? 'Follow up…' : 'Ask anything about the occupancy data'}
+          disabled={busy}
+        />
+        <button className="act" type="submit" disabled={busy || !draft.trim()}>Send</button>
+      </form>
     </div>
   )
 }
