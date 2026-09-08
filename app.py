@@ -330,6 +330,106 @@ def auth_callback():
     return redirect("/")
 
 
+def access_token_for(email, connection):
+    refresh_token = google_auth.load_refresh_token(connection, email)
+    if not refresh_token:
+        return None
+    return google_auth.access_token_from(refresh_token)
+
+
+def app_calendar_id(access_token, connection) -> str:
+    """The app's own calendar, created on first use and remembered."""
+    existing = store.get_state(connection, "app_calendar_id")
+    if existing:
+        return existing
+    created = google_auth.create_calendar(access_token)
+    store.set_state(connection, "app_calendar_id", created)
+    return created
+
+
+@app.route("/api/book", methods=["POST"])
+def api_book():
+    """Write a confirmed window to the app's calendar.
+
+    The user proposes nothing here -- the policy did. This only acts on a
+    window the policy is currently suggesting, so a crafted request cannot
+    write arbitrary events, and a stale tab cannot book a window that is no
+    longer sensible.
+    """
+    email = signed_in_email()
+    if not email:
+        return jsonify({"error": "not signed in"}), 401
+
+    wanted = (request.get_json(silent=True) or {}).get("start")
+    if not wanted:
+        return jsonify({"error": "no start time given"}), 400
+
+    connection = store.connect()
+    today = datetime.now(LOCAL_TZ).date()
+    view = day_view(connection, today, today, today)
+    windows = (view.get("suggestions") or {}).get("windows") or []
+    chosen = next((w for w in windows if w["start"] == wanted), None)
+    if not chosen:
+        return jsonify({"error": "that window is no longer suggested"}), 409
+
+    try:
+        access_token = access_token_for(email, connection)
+        if not access_token:
+            return jsonify({"error": "calendar not linked"}), 401
+        calendar_id = app_calendar_id(access_token, connection)
+
+        # replace rather than duplicate: one booking per day
+        previous = store.booking_on(connection, today)
+        if previous:
+            google_auth.delete_event(access_token, calendar_id, previous["event_id"])
+
+        start = datetime.fromisoformat(chosen["start"])
+        end = datetime.fromisoformat(chosen["end"])
+        event_id = google_auth.create_event(
+            access_token, calendar_id, start, end,
+            summary="Gym — RSF",
+            description=(
+                f"Suggested by RSF Dashboard. Typically about "
+                f"{round(chosen['predictedPct'] * 100)}% full at this time.\n"
+                f"https://rsf-dashboard.fly.dev"
+            ),
+        )
+        store.save_booking(connection, today, event_id, start, end, chosen["predictedPct"])
+    except google_auth.NeedsReauth:
+        session.pop("email", None)
+        return jsonify({"error": "sign in again"}), 401
+    except Exception as error:
+        app.logger.warning("booking failed: %s", error)
+        return jsonify({"error": "could not write to the calendar"}), 502
+
+    return jsonify({"booked": {"start": chosen["start"], "end": chosen["end"]}})
+
+
+@app.route("/api/book", methods=["DELETE"])
+def api_unbook():
+    email = signed_in_email()
+    if not email:
+        return jsonify({"error": "not signed in"}), 401
+
+    connection = store.connect()
+    today = datetime.now(LOCAL_TZ).date()
+    booking = store.booking_on(connection, today)
+    if not booking:
+        return jsonify({"booked": None})
+
+    try:
+        access_token = access_token_for(email, connection)
+        calendar_id = store.get_state(connection, "app_calendar_id")
+        if access_token and calendar_id:
+            google_auth.delete_event(access_token, calendar_id, booking["event_id"])
+    except Exception as error:
+        # the row goes regardless; a stale event the user already deleted
+        # should not leave the dashboard permanently stuck
+        app.logger.warning("could not delete calendar event: %s", error)
+    store.delete_booking(connection, today)
+    return jsonify({"booked": None})
+
+
 @app.route("/auth/logout", methods=["POST"])
 def auth_logout():
     email = session.pop("email", None)
@@ -478,6 +578,15 @@ def day_view(connection, viewed, today, earliest_day):
         "samples": [[minute_of(r), r.count, r.capacity] for r in readings],
         "typical": typical,
         "suggestions": suggestions,
+        "booking": (
+            {
+                "start": booked["starts_at"],
+                "end": booked["ends_at"],
+                "predictedPct": booked["predicted_pct"],
+            }
+            if is_today and (booked := store.booking_on(connection, viewed))
+            else None
+        ),
         "auth": {
             "signedIn": bool(signed_in_email()),
             "email": signed_in_email(),

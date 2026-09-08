@@ -99,7 +99,10 @@ export default function App() {
         )}
       </div>
 
-      {day.suggestions && <Suggestions suggestions={day.suggestions} auth={day.auth} />}
+      {day.suggestions && (
+        <Suggestions suggestions={day.suggestions} auth={day.auth}
+                     booking={day.booking} onChange={() => load()} />
+      )}
 
       <div className="card">
         <Chart day={day} />

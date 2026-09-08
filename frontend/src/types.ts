@@ -63,6 +63,12 @@ export interface SuggestionSet {
   refusal: string | null
 }
 
+export interface Booking {
+  start: string
+  end: string
+  predictedPct: number | null
+}
+
 export interface Auth {
   signedIn: boolean
   email: string | null
@@ -90,6 +96,8 @@ export interface DayView {
   typical: Typical | null
   /** Today only — 'when should I go' is not a question about a finished day. */
   suggestions: SuggestionSet | null
+  /** Today's confirmed window, written to the app's own calendar. */
+  booking: Booking | null
   auth: Auth
   hours: Hours | null
 }

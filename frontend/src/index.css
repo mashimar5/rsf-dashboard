@@ -112,3 +112,14 @@ h2 { font-size: .8125rem; font-weight: 600; color: var(--dim); margin: 0;
                         margin-right: .45rem; vertical-align: middle; }
 .suggestions .level em { font-style: normal; font-weight: 400; font-size: .75rem;
                          color: var(--dim); }
+
+.suggestions li { align-items: center; }
+.suggestions .act { font: inherit; font-size: .75rem; padding: .25rem .6rem;
+                    border: 1px solid var(--line); border-radius: 999px;
+                    background: var(--card); color: var(--fg); cursor: pointer;
+                    white-space: nowrap; }
+.suggestions .act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.suggestions .act:disabled { opacity: .5; cursor: default; }
+.suggestions .act.on { border-color: var(--green); color: var(--green); }
+.suggestions li.booked .when b { color: var(--green); }
+.hint.err { color: #c2410c; }

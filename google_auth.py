@@ -24,7 +24,18 @@ from cryptography.fernet import Fernet, InvalidToken
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 FREEBUSY_URL = "https://www.googleapis.com/calendar/v3/freeBusy"
-SCOPES = "openid email https://www.googleapis.com/auth/calendar.freebusy"
+CALENDARS_URL = "https://www.googleapis.com/calendar/v3/calendars"
+CALENDAR_NAME = "RSF Dashboard"
+# app.created is non-sensitive and sandboxed: it can create its own secondary
+# calendars and manage events on them, but cannot see or touch the user's
+# existing calendars. Read and write therefore stay cleanly separated --
+# freebusy sees when you are busy and nothing else; app.created writes only
+# into its own space.
+SCOPES = (
+    "openid email"
+    " https://www.googleapis.com/auth/calendar.freebusy"
+    " https://www.googleapis.com/auth/calendar.app.created"
+)
 TIMEOUT = 15
 
 SCHEMA = """
@@ -190,3 +201,50 @@ def busy_intervals(access_token: str, start: datetime, end: datetime):
         (datetime.fromisoformat(block["start"]), datetime.fromisoformat(block["end"]))
         for block in calendars.get("primary", {}).get("busy", [])
     ]
+
+
+def create_calendar(access_token: str, name: str = CALENDAR_NAME) -> str:
+    """Create the app's own secondary calendar and return its id.
+
+    app.created can only write to calendars this app made, so everything the
+    agent books lives here rather than on the user's primary calendar. It
+    still overlays their day view, and removing the whole calendar removes
+    everything the agent ever created.
+    """
+    response = requests.post(
+        CALENDARS_URL,
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"summary": name, "timeZone": "America/Los_Angeles"},
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()["id"]
+
+
+def create_event(access_token: str, calendar_id: str, start, end,
+                 summary: str, description: str = "") -> str:
+    response = requests.post(
+        f"{CALENDARS_URL}/{calendar_id}/events",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "summary": summary,
+            "description": description,
+            "start": {"dateTime": start.isoformat()},
+            "end": {"dateTime": end.isoformat()},
+        },
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()["id"]
+
+
+def delete_event(access_token: str, calendar_id: str, event_id: str) -> None:
+    """Removing an already-gone event is not an error -- the user may have
+    deleted it in Google Calendar, which is a perfectly normal way to cancel."""
+    response = requests.delete(
+        f"{CALENDARS_URL}/{calendar_id}/events/{event_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=TIMEOUT,
+    )
+    if response.status_code not in (200, 204, 404, 410):
+        response.raise_for_status()

@@ -33,6 +33,23 @@ CREATE TABLE IF NOT EXISTS predictions (
 );
 CREATE INDEX IF NOT EXISTS predictions_for_date ON predictions (for_date);
 
+-- Small key/value store for things like the app calendar's id
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- One booking per day, keyed by date so a second confirmation replaces the
+-- first rather than double-booking.
+CREATE TABLE IF NOT EXISTS bookings (
+    for_date TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    starts_at TEXT NOT NULL,
+    ends_at TEXT NOT NULL,
+    predicted_pct REAL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS feedback (
     prediction_id INTEGER PRIMARY KEY REFERENCES predictions (id),
     answered_at TEXT NOT NULL,
@@ -194,6 +211,51 @@ def predictions_on(connection: sqlite3.Connection, for_date: date) -> list[dict]
         }
         for row in rows
     ]
+
+
+def get_state(connection: sqlite3.Connection, key: str) -> str | None:
+    row = connection.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_state(connection: sqlite3.Connection, key: str, value: str) -> None:
+    connection.execute(
+        """INSERT INTO app_state (key, value) VALUES (?, ?)
+           ON CONFLICT (key) DO UPDATE SET value = excluded.value""",
+        (key, value),
+    )
+    connection.commit()
+
+
+def save_booking(connection: sqlite3.Connection, for_date: date, event_id: str,
+                 starts_at: datetime, ends_at: datetime, predicted_pct=None) -> None:
+    connection.execute(
+        """INSERT INTO bookings (for_date, event_id, starts_at, ends_at, predicted_pct, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (for_date) DO UPDATE SET
+               event_id = excluded.event_id, starts_at = excluded.starts_at,
+               ends_at = excluded.ends_at, predicted_pct = excluded.predicted_pct,
+               created_at = excluded.created_at""",
+        (
+            for_date.isoformat(), event_id,
+            starts_at.astimezone(timezone.utc).isoformat(),
+            ends_at.astimezone(timezone.utc).isoformat(),
+            predicted_pct, datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    connection.commit()
+
+
+def booking_on(connection: sqlite3.Connection, for_date: date) -> dict | None:
+    row = connection.execute(
+        "SELECT * FROM bookings WHERE for_date = ?", (for_date.isoformat(),)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_booking(connection: sqlite3.Connection, for_date: date) -> None:
+    connection.execute("DELETE FROM bookings WHERE for_date = ?", (for_date.isoformat(),))
+    connection.commit()
 
 
 def count_rows(connection: sqlite3.Connection) -> int:
