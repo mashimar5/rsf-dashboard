@@ -24,6 +24,15 @@ MIN_WINDOW_SAMPLES = 4
 # mean anything, so dispersion falls back to the range.
 IQR_MIN_INSTANCES = 8
 
+# How many past instances of a weekday the curve is built from. Without a
+# limit, every Monday ever recorded is weighted equally forever, so by
+# November a "typical Monday" blends quiet late-August ones with busy October
+# ones, and by spring it folds in winter break. The curve would degrade as
+# data accumulated. Eight is roughly two months -- long enough to be stable,
+# short enough to stay inside one semester -- and it is also where dispersion
+# switches to IQR, so the window fills and the metric upgrades together.
+WINDOW_INSTANCES = 8
+
 
 @dataclass
 class Score:
@@ -62,7 +71,8 @@ def score(readings, predicted_pct: float, start: datetime, end: datetime):
     return Score(predicted_pct=predicted_pct, actual_pct=actual, samples=inside)
 
 
-def weekday_bands(readings, target: date, tz, bucket_minutes: int, before=None):
+def weekday_bands(readings, target: date, tz, bucket_minutes: int, before=None,
+                  window: int = WINDOW_INSTANCES):
     """What prior instances of `target`'s weekday looked like, per time bucket.
 
     The single source of truth for the typical-weekday curve: the dashboard
@@ -77,9 +87,16 @@ def weekday_bands(readings, target: date, tz, bucket_minutes: int, before=None):
     predicting. Omit it for display, where all history except the viewed day
     is fair game.
 
+    Only the most recent `window` instances are used -- see WINDOW_INSTANCES.
+    The count returned is how many were actually used, not how many exist, so
+    it stays an honest description of what backed the numbers.
+
     Returns (bands, instance_count, day_level_spread).
     """
-    buckets: dict[int, list[float]] = {}
+    # First pass: which days qualify at all. The window is applied to days,
+    # not readings, so a day with patchy collection still counts as one
+    # instance rather than being crowded out by denser ones.
+    qualifying: list[tuple[datetime, float]] = []
     days: set[date] = set()
     for reading in readings:
         if not reading.capacity:
@@ -90,14 +107,22 @@ def weekday_bands(readings, target: date, tz, bucket_minutes: int, before=None):
         if local.weekday() != target.weekday() or local.date() == target:
             continue
         days.add(local.date())
+        qualifying.append((local, percentage(reading.count, reading.capacity)))
+
+    kept = set(sorted(days, reverse=True)[:window])
+
+    buckets: dict[int, list[float]] = {}
+    for local, fraction in qualifying:
+        if local.date() not in kept:
+            continue
         slot = (local.hour * 60 + local.minute) // bucket_minutes
-        buckets.setdefault(slot, []).append(percentage(reading.count, reading.capacity))
+        buckets.setdefault(slot, []).append(fraction)
 
     bands = {
         slot: {"median": median(values), "low": min(values), "high": max(values)}
         for slot, values in buckets.items()
     }
-    return bands, len(days), spread_of(buckets)
+    return bands, len(kept), spread_of(buckets)
 
 
 def band_spread(bands, slots) -> float | None:

@@ -154,6 +154,74 @@ class WeekdayBandsTest(unittest.TestCase):
         self.assertAlmostEqual(bands[16]["median"], 90 / 150)
 
 
+class RollingWindowTest(unittest.TestCase):
+    """Without a window the curve degrades as data accumulates: a "typical
+    Monday" would eventually blend semester weeks with winter break."""
+
+    def mondays_at_8am(self, counts):
+        """One reading at 8am on each of len(counts) consecutive Mondays,
+        oldest first, ending the week before 2026-09-07."""
+        readings = []
+        for weeks_back, count in enumerate(reversed(counts), start=1):
+            day = date(2026, 9, 7) - timedelta(weeks=weeks_back)
+            readings.append(at(datetime(day.year, day.month, day.day, 8, tzinfo=TZ), count))
+        return readings
+
+    def bands(self, readings, **kwargs):
+        return evaluate.weekday_bands(readings, date(2026, 9, 7), TZ, BUCKET, **kwargs)
+
+    def test_only_the_most_recent_instances_are_used(self):
+        # eight recent busy Mondays, preceded by four ancient empty ones
+        readings = self.mondays_at_8am([0, 0, 0, 0] + [120] * 8)
+        bands, weeks, _ = self.bands(readings)
+
+        self.assertEqual(weeks, evaluate.WINDOW_INSTANCES)
+        self.assertAlmostEqual(bands[16]["median"], 120 / 150)
+        self.assertAlmostEqual(bands[16]["low"], 120 / 150,
+                               msg="the stale empty Mondays must be gone entirely")
+
+    def test_reports_what_it_used_not_what_exists(self):
+        _, weeks, _ = self.bands(self.mondays_at_8am([100] * 20))
+
+        self.assertEqual(weeks, evaluate.WINDOW_INSTANCES,
+                         "basis_weeks must describe the numbers actually shown")
+
+    def test_below_the_window_everything_is_used(self):
+        _, weeks, _ = self.bands(self.mondays_at_8am([100] * 3))
+
+        self.assertEqual(weeks, 3, "a window changes nothing until it fills")
+
+    def test_the_window_is_relative_to_the_backtest_cutoff(self):
+        """Backtesting an old day uses the instances before it, not the most
+        recent ones overall."""
+        # four quiet Mondays, then the target, then eight busy ones after it
+        readings = self.mondays_at_8am([30] * 4 + [30] + [150] * 8)
+        target = date(2026, 9, 7) - timedelta(weeks=9)
+        midnight = datetime(target.year, target.month, target.day, tzinfo=TZ)
+        bands, weeks, _ = evaluate.weekday_bands(
+            readings, target, TZ, BUCKET, before=midnight
+        )
+
+        self.assertEqual(weeks, 4, "only the four Mondays that preceded it")
+        self.assertAlmostEqual(bands[16]["median"], 30 / 150)
+
+    def test_a_day_with_patchy_collection_still_counts_once(self):
+        """The window counts days, so a densely sampled day cannot crowd out
+        a sparse one."""
+        dense_day = date(2026, 9, 7) - timedelta(weeks=1)
+        sparse_days = [date(2026, 9, 7) - timedelta(weeks=n) for n in range(2, 5)]
+        readings = [
+            at(datetime(dense_day.year, dense_day.month, dense_day.day, 8, m, tzinfo=TZ), 150)
+            for m in range(0, 30, 5)
+        ]
+        readings += [
+            at(datetime(d.year, d.month, d.day, 8, tzinfo=TZ), 30) for d in sparse_days
+        ]
+        _, weeks, _ = self.bands(readings)
+
+        self.assertEqual(weeks, 4)
+
+
 class WindowSpreadTest(unittest.TestCase):
     """Gating reads the window it is about to suggest, not the whole day."""
 
