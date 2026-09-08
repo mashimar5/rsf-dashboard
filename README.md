@@ -330,8 +330,16 @@ Structured output guarantees the *shape* of what comes back, not its sense —
 parsing: implausible lengths clamp, impossible hours are dropped rather than
 clamped (clamping 99 to 23 would invent a preference nobody stated), and a
 crowding ceiling written as `60` is read as 60% rather than rejected. The model
-also returns a one-sentence summary of what it understood, shown back so a
-misreading is visible rather than silent.
+also returns a one-sentence summary of what it understood, plus the list of
+clauses it found, both shown back so a misreading is visible rather than
+silent.
+
+**Field order in the schema is load-bearing.** Structured output is generated
+left to right, so `clauses` is declared first on purpose: it makes the model
+enumerate everything stated before committing to any value. Without it,
+extraction was order-dependent — *"four times a week, and never more than half
+full"* returned the frequency and silently dropped the ceiling, while the same
+two clauses reversed returned both.
 
 **The agent proposes and waits.** Nothing reaches the calendar without an
 explicit click, and `/api/book` only accepts a window the policy is currently
