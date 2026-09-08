@@ -7,7 +7,7 @@ weight rooms, and an agent that suggests when to go.
 
 **Live: [rsf-dashboard.fly.dev](https://rsf-dashboard.fly.dev)**
 
-Python · Flask · SQLite · React 19 · TypeScript · Vite · Google OAuth · Docker · Fly.io
+Python · Flask · Postgres · SQL · React 19 · TypeScript · Vite · Google OAuth · Docker · Fly.io · GitHub Actions
 
 Shows how full the weight rooms are right now, the day's occupancy curve, and
 any previous day's. A collector records a reading every five minutes, so the
@@ -18,8 +18,8 @@ to a calendar it created.
 ## How it works
 
 ```
-Density API ──> collector ──> readings.db ──┐
-                (every 5m)     (SQLite)     │
+Density API ──> collector ──> Postgres ─────┐
+                (every 4m)      (Neon)      │
                                             ├──> Flask ──> React dashboard
 RecWell hours page ──> scraper ──> cache ───┤
                                             │
@@ -37,25 +37,32 @@ Backend pieces, each independent:
   meter. The share token cannot be used directly: it is exchanged for a
   15-minute access token, which is then used to read the display endpoint. The
   response carries no measurement time, so readings are stamped at fetch time.
-- **History** is appended to SQLite. The collector runs in-process in
+- **History** is appended to Postgres. The collector runs in-process in
   deployment, and can be run standalone or from cron locally.
 - **Opening hours** are scraped from the RecWell hours page, which carries up to
   three kinds of table. An explicit date beats a seasonal date range, which beats
   the undated standing schedule.
-- **Prediction** (`evaluate.py`) builds a per-weekday curve from the last few
-  instances of that weekday: a median per half-hour bucket, plus the range
-  across instances.
+- **Prediction** is a single SQL query (`store.weekday_bands`): a median per
+  half-hour bucket across the last few instances of that weekday, plus the
+  range. `evaluate.py` keeps the parts SQL has no answer for — choosing a
+  dispersion measure, scoring, backtesting.
 - **Suggestion** (`policy.py`) turns that curve into recommendations, filtered
   by opening hours and — when signed in — by Google Calendar free/busy.
 
 ## Running locally
 
-Requires Python 3.13+ and Node 22+.
+Requires Python 3.13+, Node 22+, and Postgres 17.
 
 ```bash
+brew services start postgresql@17
+createdb rsf_dev && createdb rsf_test
+
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
+
+`DATABASE_URL` defaults to `postgresql:///rsf_dev`; the schema is created on
+first connection.
 
 Put your Density share token in `.env` (gitignored):
 
@@ -107,8 +114,12 @@ fine and simply offers no calendar features.
 .venv/bin/python -m unittest discover -p 'test_*.py'
 ```
 
-No network access required: HTTP is mocked and the hours parser runs against a
-saved fixture in `tests/`.
+HTTP is mocked and the hours parser runs against a saved fixture in `tests/`,
+so no external service is reached. A local Postgres *is* required: the weekday
+curve uses `AT TIME ZONE` and `percentile_cont`, which have no in-memory
+substitute, and testing against a different engine than production runs would
+defeat the point of putting the query there. `testing.py` points the pool at
+`rsf_test` and truncates between tests.
 
 GitHub Actions runs the same suite on every push, plus a TypeScript typecheck,
 a frontend build, and a Docker build. The Python job installs from
@@ -145,8 +156,20 @@ works locally only because it was installed once and never declared.
 
 ## Deployment
 
-Runs on Fly.io as a single machine with a 1 GB volume mounted at `/data`, so
-readings, the hours cache and stored tokens survive redeploys.
+Runs on Fly.io as a single machine, with the database on Neon (free tier, US
+West 2, reached over the **pooled** endpoint). The 1 GB Fly volume now holds
+only the hours cache.
+
+`COLLECT_INTERVAL` is 240 seconds rather than 300 because Neon's free tier
+suspends the compute after roughly five minutes idle; a five-minute interval
+sits exactly on that boundary and pays a cold start most cycles.
+
+`tools/migrate_sqlite_to_postgres.py` moves an existing SQLite database across.
+It is idempotent on `observed_at` — a reading is identified by its instant — so
+it can be re-run and can run while the collector is already writing. That
+mattered: the collector wrote its first row to the new database seconds after
+deployment, and an importer that refused a non-empty target would have bailed
+mid-cutover.
 
 ```bash
 fly deploy
@@ -167,7 +190,7 @@ Three things that must stay as they are:
 | File | Contents |
 | --- | --- |
 | `density.py` | The Density API client and the `Reading` dataclass. |
-| `store.py` | SQLite schema, queries, and small migrations. |
+| `store.py` | Postgres schema, queries, the connection pool, and the weekday-curve SQL. |
 | `collect.py` | The recorder. One-shot by default. |
 | `hours.py` | Hours scraping, table selection, and caching. |
 | `evaluate.py` | The typical-weekday curve, dispersion, scoring and backtesting. |
@@ -190,13 +213,27 @@ against `+00:00` values silently pulls in the previous evening. The same class o
 bug appeared three times: in a query bound, in an ad-hoc SQL comparison, and in
 a frontend `===` between two spellings of the same instant.
 
-**SQLite runs in WAL mode** because `collect.py` can run as a separate process
-against the file the web app is serving from. It matters in deployment too:
-SQLite locks per connection rather than per process, so the in-process collector
-and each request contend even under a single worker. At one write every five
-minutes the contention is rare — this is cheap insurance, not a fix for a
-measured problem. WAL still allows only one writer at a time; what it removes is
-readers blocking the writer.
+**Postgres, not SQLite — for two specific reasons, not for scale.** At a few
+thousand rows SQLite was the right tool and stayed right for weeks.
+
+The first reason is that the typical-weekday curve could not be expressed in
+it. Bucketing a UTC instant by *local* weekday and time of day needs a
+DST-aware timezone database, which SQLite does not have — its `localtime`
+modifier uses the server's zone, UTC in production. It also has no median. So
+the central computation had to load every candidate row into Python. In
+Postgres it is one query: `AT TIME ZONE` for correct local time,
+`percentile_cont` for a real median, `LIMIT` for the rolling window.
+
+The second is that `timestamptz` retires a bug class rather than defending
+against it. SQLite stored times as text, and comparing ISO strings in different
+offsets caused four separate bugs here — a query bound, an ad-hoc query, a
+frontend `===`, and an unnormalised write. A column that holds an instant
+cannot be compared wrongly. The frontend still compares times in JavaScript,
+which is why `sameInstant()` exists; that half of the hazard is unchanged.
+
+**Connections come from a pool** and are returned on request teardown. A
+Postgres connection is a socket and a server-side process, unlike a SQLite
+handle that is simply garbage collected, so a leaked one is a real leak.
 
 **The page never saves readings.** Collection lives only in the collector, so
 samples land at regular intervals and refreshing the page cannot skew history.
