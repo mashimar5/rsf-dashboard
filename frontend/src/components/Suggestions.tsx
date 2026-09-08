@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import type { Auth, Booking, Preferences, SuggestionSet } from '../types'
-import { PreferenceInput } from './PreferenceInput'
 import { clock, levelColor, pct, sameInstant } from '../lib/format'
 
 interface Props {
@@ -8,7 +7,6 @@ interface Props {
   auth: Auth
   booking: Booking | null
   preferences: Preferences | null
-  preferencesAvailable: boolean
   onChange: () => void
 }
 
@@ -17,9 +15,10 @@ async function signOut() {
   window.location.reload()
 }
 
-export function Suggestions({ suggestions, auth, booking, preferences,
-                             preferencesAvailable, onChange }: Props) {
+export function Suggestions({ suggestions, auth, booking, preferences, onChange }: Props) {
   const [busy, setBusy] = useState<string | null>(null)
+
+  const activePreferences = describe(preferences)
   const [error, setError] = useState<string | null>(null)
 
   // The agent only writes after an explicit confirmation; nothing reaches the
@@ -95,8 +94,9 @@ export function Suggestions({ suggestions, auth, booking, preferences,
         <p className="empty">{suggestions.refusal ?? 'Nothing to suggest right now.'}</p>
       )}
 
-      {auth.signedIn && preferencesAvailable && (
-        <PreferenceInput preferences={preferences} onChange={onChange} />
+      {activePreferences.length > 0 && (
+        /* set through the chat below; shown here because this is what they affect */
+        <p className="hint">Filtered by: {activePreferences.join(' · ')}</p>
       )}
 
       {error && <p className="hint err">{error}</p>}
@@ -106,4 +106,18 @@ export function Suggestions({ suggestions, auth, booking, preferences,
       )}
     </div>
   )
+}
+
+const HOUR = (h: number) => `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`
+
+/** Active preferences in words, for the line above the suggestions. */
+function describe(p: Preferences | null): string[] {
+  if (!p) return []
+  const parts: string[] = []
+  if (p.session_minutes) parts.push(`${p.session_minutes} min sessions`)
+  if (p.earliest_hour != null) parts.push(`from ${HOUR(p.earliest_hour)}`)
+  if (p.latest_hour != null) parts.push(`starting by ${HOUR(p.latest_hour)}`)
+  if (p.max_crowding_pct != null) parts.push(`under ${Math.round(p.max_crowding_pct * 100)}% full`)
+  if (p.travel_buffer_minutes) parts.push(`${p.travel_buffer_minutes} min around meetings`)
+  return parts
 }

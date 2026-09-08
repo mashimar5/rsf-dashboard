@@ -115,7 +115,6 @@ export default function App() {
       {day.suggestions && (
         <Suggestions suggestions={day.suggestions} auth={day.auth}
                      booking={day.booking} preferences={day.preferences}
-                     preferencesAvailable={day.preferencesAvailable}
                      onChange={() => load()} />
       )}
 
@@ -123,7 +122,7 @@ export default function App() {
         <Chart day={day} />
       </div>
 
-      {day.auth.signedIn && day.askAvailable && <Ask />}
+      {day.auth.signedIn && day.askAvailable && <Ask onChange={() => load()} />}
     </main>
   )
 }

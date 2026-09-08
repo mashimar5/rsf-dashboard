@@ -472,51 +472,23 @@ def stored_preferences(connection):
     return json.loads(raw) if raw else None
 
 
-@app.route("/api/preferences", methods=["POST"])
-def api_preferences():
-    """Turn a sentence into policy parameters.
-
-    The model runs here and only here. What it returns is validated, stored as
-    plain numbers, and everything downstream reads those numbers -- so a
-    suggestion is never one model call away from being different.
-    """
-    if not signed_in_email():
-        return jsonify({"error": "not signed in"}), 401
-    if not intent.available():
-        return jsonify({"error": "not configured"}), 503
-
-    text = (request.get_json(silent=True) or {}).get("text", "")
-    parsed = intent.parse(text)
-    if parsed is None:
-        return jsonify({"error": "could not read that as a preference"}), 422
-
-    connection = db()
-    store.set_state(connection, "preferences", parsed.model_dump_json())
-    return jsonify({"preferences": json.loads(parsed.model_dump_json())})
-
-
-@app.route("/api/preferences", methods=["DELETE"])
-def api_clear_preferences():
-    if not signed_in_email():
-        return jsonify({"error": "not signed in"}), 401
-    store.set_state(db(), "preferences", "")
-    return jsonify({"preferences": None})
-
-
 MAX_CHAT_TURNS = 8
 
 
 @app.route("/api/ask", methods=["POST"])
 def api_ask():
-    """Answer an ad hoc question about the occupancy history.
+    """Conversation about the occupancy data, and the only way preferences
+    are set.
 
-    Deliberately narrow. The dashboard already answers "how busy is it" and
-    "when should I go" better than a sentence could; this exists for the
-    questions no fixed widget can anticipate -- comparisons across weekdays,
-    whether a particular day was unusual.
+    Deliberately the single text input on the page. The dashboard already
+    answers "how busy is it" and "when should I go" better than a sentence
+    could, and those stay as they are; this covers the open-ended questions
+    and the settings that shape the suggestions.
 
-    The model reaches the data only through vetted tools with typed arguments,
-    so it cannot write SQL, reach another table, or write anything at all.
+    The model reaches the data only through vetted tools with typed
+    arguments, so it cannot write SQL or reach another table. The one tool
+    that writes touches a single settings row, which is visible on the page
+    and reversible in a sentence.
     """
     if not signed_in_email():
         return jsonify({"error": "not signed in"}), 401
@@ -540,6 +512,14 @@ def api_ask():
     if result is None:
         return jsonify({"error": "could not answer that"}), 502
     return jsonify(result)
+
+
+@app.route("/api/preferences", methods=["DELETE"])
+def api_clear_preferences():
+    if not signed_in_email():
+        return jsonify({"error": "not signed in"}), 401
+    store.set_state(db(), "preferences", "")
+    return jsonify({"preferences": None})
 
 
 @app.route("/api/feedback", methods=["POST"])
@@ -865,7 +845,6 @@ def day_view(connection, viewed, today, earliest_day):
             if is_today and reading else False
         ),
         "preferences": preferences,
-        "preferencesAvailable": intent.available(),
         "askAvailable": ask.available(),
         "auth": {
             "signedIn": bool(signed_in_email()),

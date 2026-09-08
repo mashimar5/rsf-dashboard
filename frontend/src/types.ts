@@ -127,7 +127,6 @@ export interface DayView {
   stale: boolean
   preferences: Preferences | null
   /** False when no API key is configured; the input is hidden. */
-  preferencesAvailable: boolean
   /** False when no API key is configured; the question box is hidden. */
   askAvailable: boolean
   auth: Auth

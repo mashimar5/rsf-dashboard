@@ -38,38 +38,6 @@ class ValidationTest(unittest.TestCase):
         self.assertFalse(self.make(session_minutes=60).is_empty())
 
 
-class ParseTest(unittest.TestCase):
-    """The model is mocked: tests must not spend money or need a network."""
-
-    def client_returning(self, parsed):
-        client = Mock()
-        client.messages.parse.return_value = SimpleNamespace(parsed_output=parsed)
-        return client
-
-    def test_blank_input_never_reaches_the_model(self):
-        client = self.client_returning(None)
-        self.assertIsNone(intent.parse("   ", client=client))
-        client.messages.parse.assert_not_called()
-
-    def test_a_model_failure_returns_none_rather_than_raising(self):
-        """A misread sentence must leave existing settings alone, not 500."""
-        client = Mock()
-        client.messages.parse.side_effect = RuntimeError("api down")
-
-        self.assertIsNone(intent.parse("mornings please", client=client))
-
-    def test_an_empty_extraction_is_treated_as_a_failure(self):
-        parsed = intent.Preferences(summary="I understood nothing at all")
-        self.assertIsNone(intent.parse("hello", client=self.client_returning(parsed)))
-
-    def test_a_usable_extraction_comes_back(self):
-        parsed = intent.Preferences(session_minutes=90, earliest_hour=7, summary="90 min, from 7am")
-        result = intent.parse("90 minute sessions, not before 7", client=self.client_returning(parsed))
-
-        self.assertEqual(result.session_minutes, 90)
-        self.assertEqual(result.earliest_hour, 7)
-
-
 class PolicyHonoursPreferencesTest(unittest.TestCase):
     """What the model extracts has to actually change the suggestions."""
 

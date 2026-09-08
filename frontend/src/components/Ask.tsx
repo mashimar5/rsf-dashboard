@@ -9,7 +9,7 @@ interface Turn {
 /** A conversation about the data: patterns, comparisons, what to expect.
  *  The dashboard already answers "how busy is it" and "when should I go"
  *  better than a sentence could; this is for the open-ended questions. */
-export function Ask() {
+export function Ask({ onChange }: { onChange: () => void }) {
   const [turns, setTurns] = useState<Turn[]>([])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
@@ -46,6 +46,8 @@ export function Ask() {
     }
     const result = await response.json()
     setTurns([...next, { role: 'assistant', content: result.answer, toolsUsed: result.toolsUsed }])
+    // a turn may have changed settings, so refresh what the page is showing
+    if ((result.toolsUsed ?? []).some((t: string) => t.endsWith('_preferences'))) onChange()
   }
 
   return (
@@ -59,8 +61,9 @@ export function Ask() {
 
       {turns.length === 0 && !busy && (
         <p className="hint">
-          Try: “what patterns do you see?” · “how busy will Thursday evening be?”
-          · “is the weekend different from weekdays?”
+          Ask about patterns — “what patterns do you see?”, “how busy will Thursday
+          evening be?” — or set what you want from suggestions: “90 minute sessions,
+          nothing after 11am”.
         </p>
       )}
 

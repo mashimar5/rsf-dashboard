@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 import anthropic
 from anthropic import beta_tool
 
+import intent
 import store
 
 MODEL = "claude-opus-5"
@@ -270,7 +271,69 @@ def my_sessions() -> str:
     ]})
 
 
-TOOLS = [data_overview, data_range, occupancy_stats, typical_weekday_curve, my_sessions]
+@beta_tool
+def current_preferences() -> str:
+    """The scheduling preferences currently in effect, if any."""
+    with store.connection() as conn:
+        raw = store.get_state(conn, "preferences")
+    return raw or json.dumps({"preferences": None, "note": "none set"})
+
+
+@beta_tool
+def set_preferences(
+    session_minutes: int | None = None,
+    earliest_hour: int | None = None,
+    latest_hour: int | None = None,
+    max_crowding_pct: float | None = None,
+    travel_buffer_minutes: int | None = None,
+    sessions_per_week: int | None = None,
+) -> str:
+    """Set the user's scheduling preferences, replacing any already set.
+
+    Call this when the user says what they want from suggestions -- session
+    length, hours they will go, how busy is too busy, clearance around
+    meetings. Pass only the fields they actually expressed; omit the rest.
+    Values are validated and may be adjusted, so read back what is returned
+    rather than what you sent.
+
+    Args:
+        session_minutes: How long a workout should be.
+        earliest_hour: Earliest local hour they would go, 0-23.
+        latest_hour: Latest local hour a session may start, 0-23.
+        max_crowding_pct: Busiest they will tolerate, as a fraction (0.5 = half full).
+        travel_buffer_minutes: Clearance needed either side of a calendar commitment.
+        sessions_per_week: How many workouts a week they are aiming for.
+    """
+    stated = {
+        "session_minutes": session_minutes,
+        "earliest_hour": earliest_hour,
+        "latest_hour": latest_hour,
+        "max_crowding_pct": max_crowding_pct,
+        "travel_buffer_minutes": travel_buffer_minutes,
+        "sessions_per_week": sessions_per_week,
+    }
+    if all(value is None for value in stated.values()):
+        return json.dumps({"error": "nothing to set; no preference was expressed"})
+
+    # The schema fixes the shape; these validators fix the sense
+    checked = intent.Preferences(summary="", **stated)
+    saved = {k: v for k, v in checked.model_dump().items()
+             if k not in ("summary", "clauses")}
+    with store.connection() as conn:
+        store.set_state(conn, "preferences", json.dumps(saved))
+    return json.dumps({"saved": {k: v for k, v in saved.items() if v is not None}})
+
+
+@beta_tool
+def clear_preferences() -> str:
+    """Remove all scheduling preferences, returning suggestions to defaults."""
+    with store.connection() as conn:
+        store.set_state(conn, "preferences", "")
+    return json.dumps({"cleared": True})
+
+
+TOOLS = [data_overview, data_range, occupancy_stats, typical_weekday_curve,
+         my_sessions, current_preferences, set_preferences, clear_preferences]
 
 SYSTEM = """You are an analyst for a dataset of gym occupancy readings from the \
 UC Berkeley RSF weight rooms. You discuss patterns, make comparisons, and
@@ -300,9 +363,17 @@ How to answer
 - Be willing to say a pattern is absent. Not every question has a finding
   behind it.
 
+Settings
+- You can set the user's scheduling preferences, which filter the windows the
+  dashboard suggests: session length, the hours they will go, how busy is too
+  busy, clearance around meetings. When they express one, call
+  set_preferences and confirm in a sentence what now applies.
+- Only set what they actually said. Inventing a preference is worse than
+  setting none. "Mornings if possible" is not an hour unless they name or
+  clearly imply a boundary.
+
 Limits
-- You cannot see the user's calendar, change settings, or book anything. Say
-  so if asked.
+- You cannot see the user's calendar or book anything. Say so if asked.
 - Do not invent causes. You can note that occupancy drops after 8pm; you
   cannot know why unless the data shows it."""
 
