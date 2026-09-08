@@ -385,6 +385,10 @@ def api_book():
 
         start = datetime.fromisoformat(chosen["start"])
         end = datetime.fromisoformat(chosen["end"])
+        prediction_id = store.log_prediction(
+            connection, today, start, end, chosen["predictedPct"],
+            (view.get("typical") or {}).get("weeks", 0), chosen.get("spread"),
+        )
         event_id = google_auth.create_event(
             access_token, calendar_id, start, end,
             summary="Gym — RSF",
@@ -394,7 +398,8 @@ def api_book():
                 f"https://rsf-dashboard.fly.dev"
             ),
         )
-        store.save_booking(connection, today, event_id, start, end, chosen["predictedPct"])
+        store.save_booking(connection, today, event_id, start, end,
+                           chosen["predictedPct"], prediction_id)
     except google_auth.NeedsReauth:
         session.pop("email", None)
         return jsonify({"error": "sign in again"}), 401
@@ -403,6 +408,19 @@ def api_book():
         return jsonify({"error": "could not write to the calendar"}), 502
 
     return jsonify({"booked": {"start": chosen["start"], "end": chosen["end"]}})
+
+
+@app.route("/api/feedback", methods=["POST"])
+def api_feedback():
+    if not signed_in_email():
+        return jsonify({"error": "not signed in"}), 401
+    payload = request.get_json(silent=True) or {}
+    if "predictionId" not in payload or "went" not in payload:
+        return jsonify({"error": "predictionId and went are required"}), 400
+
+    connection = store.connect()
+    store.record_feedback(connection, int(payload["predictionId"]), bool(payload["went"]))
+    return jsonify({"answered": bool(payload["went"])})
 
 
 @app.route("/api/book", methods=["DELETE"])
@@ -467,6 +485,27 @@ def api_current():
             "live": is_live,
         }
     )
+
+
+def feedback_prompt(connection, viewed, is_today):
+    """Ask "did you go?" about a booked window, once the day is over.
+
+    Only about bookings: seeing three suggestions and booking none is already
+    a signal, so there is nothing to ask. Attendance cannot be derived from
+    the sensor, which counts bodies at a doorway rather than identities, so
+    this is the only place the answer can come from.
+    """
+    if is_today:
+        return None
+    booking = store.booking_on(connection, viewed)
+    if not booking or not booking.get("prediction_id"):
+        return None
+    return {
+        "predictionId": booking["prediction_id"],
+        "start": datetime.fromisoformat(booking["starts_at"]).astimezone(LOCAL_TZ).isoformat(),
+        "end": datetime.fromisoformat(booking["ends_at"]).astimezone(LOCAL_TZ).isoformat(),
+        "answered": store.feedback_for(connection, booking["prediction_id"]),
+    }
 
 
 def day_view(connection, viewed, today, earliest_day):
@@ -548,19 +587,22 @@ def day_view(connection, viewed, today, earliest_day):
             busy=busy_today(midnight, connection),
             not_before=datetime.now(LOCAL_TZ),
         )
-        suggestions = {
-            "windows": [
-                {
-                    "start": window.start.isoformat(),
-                    "end": window.end.isoformat(),
-                    "predictedPct": window.predicted_pct,
-                    "spread": window.spread,
-                    "section": window.section,
-                }
-                for window in found.windows
-            ],
-            "refusal": found.refusal,
-        }
+        windows = []
+        for window in found.windows:
+            # recorded as shown: the model will change, and recomputing later
+            # would score today's model against a decision it never made
+            store.log_prediction(
+                connection, viewed, window.start, window.end,
+                window.predicted_pct, weeks, window.spread,
+            )
+            windows.append({
+                "start": window.start.isoformat(),
+                "end": window.end.isoformat(),
+                "predictedPct": window.predicted_pct,
+                "spread": window.spread,
+                "section": window.section,
+            })
+        suggestions = {"windows": windows, "refusal": found.refusal}
 
     return {
         "date": viewed.isoformat(),
@@ -589,6 +631,7 @@ def day_view(connection, viewed, today, earliest_day):
             if is_today and (booked := store.booking_on(connection, viewed))
             else None
         ),
+        "feedback": feedback_prompt(connection, viewed, is_today),
         "auth": {
             "signedIn": bool(signed_in_email()),
             "email": signed_in_email(),

@@ -145,3 +145,108 @@ class CalendarIdTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PredictionLoggingTest(unittest.TestCase):
+    """Suggestions are recorded as shown, once, however often the page renders."""
+
+    def setUp(self):
+        self.path = Path(f"/tmp/rsf-predlog-{id(self)}.db")
+        self.connection = store.connect(self.path)
+        self.addCleanup(self.connection.close)
+        self.addCleanup(lambda: [
+            self.path.with_name(self.path.name + s).unlink(missing_ok=True)
+            for s in ("", "-wal", "-shm")
+        ])
+        self.day = date(2026, 9, 8)
+        self.start = datetime(2026, 9, 8, 14, tzinfo=TZ)
+
+    def log(self, hour=14, pct=0.35):
+        start = self.start.replace(hour=hour)
+        return store.log_prediction(self.connection, self.day, start,
+                                    start + timedelta(hours=1), pct, 3, 0.1)
+
+    def test_logging_the_same_window_twice_makes_one_row(self):
+        first, second = self.log(), self.log()
+
+        self.assertEqual(first, second, "same row id returned both times")
+        self.assertEqual(
+            self.connection.execute("SELECT COUNT(*) FROM predictions").fetchone()[0], 1
+        )
+
+    def test_different_windows_on_a_day_are_separate_rows(self):
+        self.log(hour=9)
+        self.log(hour=14)
+
+        self.assertEqual(
+            self.connection.execute("SELECT COUNT(*) FROM predictions").fetchone()[0], 2
+        )
+
+    def test_confidence_at_the_time_is_kept(self):
+        row_id = self.log(pct=0.42)
+        row = self.connection.execute(
+            "SELECT predicted_pct, basis_weeks, basis_spread FROM predictions WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+
+        self.assertAlmostEqual(row["predicted_pct"], 0.42)
+        self.assertEqual(row["basis_weeks"], 3)
+
+    def test_unanswered_feedback_is_none_not_false(self):
+        row_id = self.log()
+
+        self.assertIsNone(store.feedback_for(self.connection, row_id),
+                          "never asked is not the same as answered no")
+
+    def test_answering_is_recorded_and_replaceable(self):
+        row_id = self.log()
+        store.record_feedback(self.connection, row_id, went=False)
+        self.assertIs(store.feedback_for(self.connection, row_id), False)
+
+        store.record_feedback(self.connection, row_id, went=True)
+        self.assertIs(store.feedback_for(self.connection, row_id), True)
+
+
+class FeedbackPromptTest(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(f"/tmp/rsf-prompt-{id(self)}.db")
+        self.connection = store.connect(self.path)
+        self.addCleanup(self.connection.close)
+        self.addCleanup(lambda: [
+            self.path.with_name(self.path.name + s).unlink(missing_ok=True)
+            for s in ("", "-wal", "-shm")
+        ])
+        self.day = date(2026, 9, 7)
+        self.start = datetime(2026, 9, 7, 14, tzinfo=TZ)
+
+    def book(self, with_prediction=True):
+        prediction_id = None
+        if with_prediction:
+            prediction_id = store.log_prediction(
+                self.connection, self.day, self.start,
+                self.start + timedelta(hours=1), 0.3, 3, 0.1,
+            )
+        store.save_booking(self.connection, self.day, "evt-1", self.start,
+                           self.start + timedelta(hours=1), 0.3, prediction_id)
+        return prediction_id
+
+    def test_no_prompt_for_today(self):
+        self.book()
+        self.assertIsNone(app.feedback_prompt(self.connection, self.day, is_today=True))
+
+    def test_no_prompt_without_a_booking(self):
+        self.assertIsNone(app.feedback_prompt(self.connection, self.day, is_today=False))
+
+    def test_prompt_for_a_past_booked_day(self):
+        self.book()
+        prompt = app.feedback_prompt(self.connection, self.day, is_today=False)
+
+        self.assertIsNotNone(prompt)
+        self.assertIsNone(prompt["answered"], "unanswered until asked")
+
+    def test_prompt_reflects_the_answer_once_given(self):
+        prediction_id = self.book()
+        store.record_feedback(self.connection, prediction_id, went=True)
+        prompt = app.feedback_prompt(self.connection, self.day, is_today=False)
+
+        self.assertIs(prompt["answered"], True)

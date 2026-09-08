@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS predictions (
     basis_spread REAL
 );
 CREATE INDEX IF NOT EXISTS predictions_for_date ON predictions (for_date);
+-- One row per suggested window per day, so re-rendering the page all day
+-- does not produce dozens of duplicate predictions.
+CREATE UNIQUE INDEX IF NOT EXISTS predictions_window
+    ON predictions (for_date, window_start);
 
 -- Small key/value store for things like the app calendar's id
 CREATE TABLE IF NOT EXISTS app_state (
@@ -47,6 +51,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     starts_at TEXT NOT NULL,
     ends_at TEXT NOT NULL,
     predicted_pct REAL,
+    prediction_id INTEGER,
     created_at TEXT NOT NULL
 );
 
@@ -56,6 +61,18 @@ CREATE TABLE IF NOT EXISTS feedback (
     went INTEGER NOT NULL
 );
 """
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """Add columns that post-date a table's creation.
+
+    CREATE TABLE IF NOT EXISTS silently does nothing for an existing table, so
+    a new column never appears without this.
+    """
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(bookings)")}
+    if columns and "prediction_id" not in columns:
+        connection.execute("ALTER TABLE bookings ADD COLUMN prediction_id INTEGER")
+        connection.commit()
 
 
 def connect(db_path=DB_PATH) -> sqlite3.Connection:
@@ -69,6 +86,7 @@ def connect(db_path=DB_PATH) -> sqlite3.Connection:
     # an EXCLUSIVE lock and readers get SQLITE_BUSY.
     connection.execute("PRAGMA journal_mode=WAL")
     connection.executescript(SCHEMA)
+    _migrate(connection)
     return connection
 
 
@@ -176,6 +194,49 @@ def save_prediction(
     return cursor.lastrowid
 
 
+def log_prediction(
+    connection: sqlite3.Connection,
+    for_date: date,
+    window_start: datetime,
+    window_end: datetime,
+    predicted_pct: float,
+    basis_weeks: int,
+    basis_spread: float | None = None,
+) -> int:
+    """Record a window as shown, once. Returns the row id either way.
+
+    Idempotent on (for_date, window_start): the dashboard re-renders on every
+    load and every 60s poll, and each of those is the same suggestion, not a
+    new one.
+    """
+    connection.execute(
+        """INSERT OR IGNORE INTO predictions
+           (made_at, for_date, window_start, window_end, predicted_pct,
+            basis_weeks, basis_spread)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            datetime.now(timezone.utc).isoformat(),
+            for_date.isoformat(),
+            window_start.astimezone(timezone.utc).isoformat(),
+            window_end.astimezone(timezone.utc).isoformat(),
+            predicted_pct, basis_weeks, basis_spread,
+        ),
+    )
+    connection.commit()
+    row = connection.execute(
+        "SELECT id FROM predictions WHERE for_date = ? AND window_start = ?",
+        (for_date.isoformat(), window_start.astimezone(timezone.utc).isoformat()),
+    ).fetchone()
+    return row[0]
+
+
+def feedback_for(connection: sqlite3.Connection, prediction_id: int):
+    row = connection.execute(
+        "SELECT went FROM feedback WHERE prediction_id = ?", (prediction_id,)
+    ).fetchone()
+    return None if row is None else bool(row[0])
+
+
 def record_feedback(
     connection: sqlite3.Connection,
     prediction_id: int,
@@ -228,19 +289,21 @@ def set_state(connection: sqlite3.Connection, key: str, value: str) -> None:
 
 
 def save_booking(connection: sqlite3.Connection, for_date: date, event_id: str,
-                 starts_at: datetime, ends_at: datetime, predicted_pct=None) -> None:
+                 starts_at: datetime, ends_at: datetime, predicted_pct=None,
+                 prediction_id=None) -> None:
     connection.execute(
-        """INSERT INTO bookings (for_date, event_id, starts_at, ends_at, predicted_pct, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)
+        """INSERT INTO bookings
+           (for_date, event_id, starts_at, ends_at, predicted_pct, prediction_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (for_date) DO UPDATE SET
                event_id = excluded.event_id, starts_at = excluded.starts_at,
                ends_at = excluded.ends_at, predicted_pct = excluded.predicted_pct,
-               created_at = excluded.created_at""",
+               prediction_id = excluded.prediction_id, created_at = excluded.created_at""",
         (
             for_date.isoformat(), event_id,
             starts_at.astimezone(timezone.utc).isoformat(),
             ends_at.astimezone(timezone.utc).isoformat(),
-            predicted_pct, datetime.now(timezone.utc).isoformat(),
+            predicted_pct, prediction_id, datetime.now(timezone.utc).isoformat(),
         ),
     )
     connection.commit()

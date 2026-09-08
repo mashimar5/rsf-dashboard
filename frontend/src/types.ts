@@ -69,6 +69,14 @@ export interface Booking {
   predictedPct: number | null
 }
 
+export interface FeedbackPrompt {
+  predictionId: number
+  start: string
+  end: string
+  /** null means never asked, which is different from answering no. */
+  answered: boolean | null
+}
+
 export interface Auth {
   signedIn: boolean
   email: string | null
@@ -98,6 +106,8 @@ export interface DayView {
   suggestions: SuggestionSet | null
   /** Today's confirmed window, written to the app's own calendar. */
   booking: Booking | null
+  /** Set on a past day that had a booking, so the visit can be confirmed. */
+  feedback: FeedbackPrompt | null
   auth: Auth
   hours: Hours | null
 }

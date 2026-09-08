@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Chart } from './components/Chart'
 import { DayNav } from './components/DayNav'
 import { StatTiles } from './components/StatTiles'
+import { Feedback } from './components/Feedback'
 import { Suggestions } from './components/Suggestions'
 import type { DayView } from './types'
 import { clock, levelColor, pct } from './lib/format'
@@ -98,6 +99,10 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {day.feedback && day.auth.signedIn && (
+        <Feedback prompt={day.feedback} onAnswer={() => load()} />
+      )}
 
       {day.suggestions && (
         <Suggestions suggestions={day.suggestions} auth={day.auth}
