@@ -11,6 +11,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+import evaluate
 import hours
 import store
 from density import fetch_reading, percentage
@@ -99,40 +100,21 @@ def chart_y_ticks(step_percent: int = 25):
     return [{"pct": p, "label": f"{p}%"} for p in range(0, 101, step_percent)]
 
 
-def typical_curve(readings, weekday, today, tz):
-    """Median occupancy by time-of-day across prior instances of one weekday.
+def band_points(bands):
+    """[minuteOfDay, median, low, high] at each bucket's midpoint.
 
-    Returns (buckets, day_count). Today is excluded so the day is never
-    compared against a curve it helped produce -- that would drag the two
-    lines together, worst of all early in the morning when today's handful of
-    samples is a large share of the total.
-
-    Median rather than mean: one closure or holiday would visibly drag a mean
-    when only a few weeks of history exist.
+    The client draws the geometry; this only says where in the day each
+    bucket sits and how much the past instances disagreed there.
     """
-    buckets = defaultdict(list)
-    days = set()
-    for reading in readings:
-        if not reading.capacity:
-            continue
-        local = reading.observed_at.astimezone(tz)
-        if local.weekday() != weekday or local.date() == today:
-            continue
-        days.add(local.date())
-        slot = (local.hour * 60 + local.minute) // BUCKET_MINUTES
-        buckets[slot].append(percentage(reading.count, reading.capacity))
-    return {slot: median(values) for slot, values in buckets.items()}, len(days)
-
-
-def curve_points(buckets):
-    """Bucketed medians -> an SVG polyline, plotted at each bucket's midpoint"""
-    points = []
-    for slot in sorted(buckets):
-        minutes = slot * BUCKET_MINUTES + BUCKET_MINUTES / 2
-        x = minutes / 1440 * CHART_WIDTH
-        y = CHART_HEIGHT - buckets[slot] * CHART_HEIGHT
-        points.append(f"{x:.1f},{y:.1f}")
-    return " ".join(points)
+    return [
+        [
+            slot * BUCKET_MINUTES + BUCKET_MINUTES // 2,
+            bands[slot]["median"],
+            bands[slot]["low"],
+            bands[slot]["high"],
+        ]
+        for slot in sorted(bands)
+    ]
 
 
 def chart_points(readings, midnight):
@@ -353,18 +335,16 @@ def day_view(connection, viewed, today, earliest_day):
                 "openOnly": found["open_only"],
             }
 
-    buckets, weeks = typical_curve(
-        store.all_readings(connection), viewed.weekday(), viewed, LOCAL_TZ
+    bands, weeks, spread = evaluate.weekday_bands(
+        store.all_readings(connection), viewed, LOCAL_TZ, BUCKET_MINUTES
     )
     typical = None
     if weeks >= MIN_WEEKDAY_INSTANCES:
         typical = {
             "weeks": weeks,
             "weekday": viewed.strftime("%A"),
-            "points": [
-                [slot * BUCKET_MINUTES + BUCKET_MINUTES // 2, buckets[slot]]
-                for slot in sorted(buckets)
-            ],
+            "spread": spread,
+            "points": band_points(bands),
         }
 
     return {

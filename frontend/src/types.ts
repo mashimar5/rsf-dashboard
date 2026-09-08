@@ -39,8 +39,12 @@ export interface Hours {
 export interface Typical {
   weeks: number
   weekday: string
-  /** [minuteOfDay, fractionFull] */
-  points: [number, number][]
+  /** Mean disagreement across the day, for context. Null when every bucket
+   *  has a single instance. */
+  spread: number | null
+  /** [minuteOfDay, median, low, high] — low/high are the range across past
+   *  instances of this weekday, drawn as a band behind the median line. */
+  points: [number, number, number, number][]
 }
 
 export interface Nav {

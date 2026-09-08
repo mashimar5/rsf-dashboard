@@ -20,58 +20,6 @@ def monday(week_offset, hour, minute=0):
     return base - timedelta(weeks=week_offset)
 
 
-class TypicalCurveTest(unittest.TestCase):
-    def test_excludes_today_from_its_own_average(self):
-        readings = [
-            reading(monday(1, 8), 100),
-            reading(monday(2, 8), 100),
-            # today's wildly different value must not pull the median
-            reading(monday(0, 8), 0),
-        ]
-        buckets, weeks = app.typical_curve(readings, 0, monday(0, 8).date(), TZ)
-
-        self.assertEqual(weeks, 2, "today must not count as an instance")
-        slot = 8 * 60 // app.BUCKET_MINUTES
-        self.assertAlmostEqual(buckets[slot], 100 / 150)
-
-    def test_uses_median_so_one_outlier_does_not_skew(self):
-        readings = [
-            reading(monday(1, 8), 90),
-            reading(monday(2, 8), 90),
-            reading(monday(3, 8), 90),
-            reading(monday(4, 8), 0),  # a closure
-        ]
-        buckets, _ = app.typical_curve(readings, 0, monday(0, 8).date(), TZ)
-
-        slot = 8 * 60 // app.BUCKET_MINUTES
-        self.assertAlmostEqual(buckets[slot], 90 / 150, msg="a mean would be dragged to ~0.45")
-
-    def test_groups_samples_into_half_hour_buckets(self):
-        readings = [
-            reading(monday(1, 8, 5), 60),
-            reading(monday(1, 8, 25), 90),   # same 8:00-8:30 bucket
-            reading(monday(1, 8, 45), 150),  # next bucket
-        ]
-        buckets, _ = app.typical_curve(readings, 0, monday(0, 8).date(), TZ)
-
-        self.assertAlmostEqual(buckets[16], 75 / 150, msg="median of 60 and 90")
-        self.assertAlmostEqual(buckets[17], 1.0)
-
-    def test_ignores_other_weekdays(self):
-        tuesday = monday(1, 8) + timedelta(days=1)
-        buckets, weeks = app.typical_curve(
-            [reading(tuesday, 140)], 0, monday(0, 8).date(), TZ
-        )
-        self.assertEqual(weeks, 0)
-        self.assertEqual(buckets, {})
-
-
-def same_weekday_as_today(weeks_ago, hour):
-    """A local datetime `weeks_ago` weeks back, so it shares today's weekday"""
-    day = datetime.now(TZ).date() - timedelta(weeks=weeks_ago)
-    return datetime(day.year, day.month, day.day, hour, tzinfo=TZ)
-
-
 class DaySummaryTest(unittest.TestCase):
     """A day is mostly closed hours reading zero, so scoping matters a lot."""
 
@@ -161,6 +109,12 @@ class DaySummaryTest(unittest.TestCase):
         self.assertFalse(summary["open_only"])
 
 
+def same_weekday_as_today(weeks_ago, hour):
+    """A local datetime `weeks_ago` weeks back, so it shares today's weekday"""
+    day = datetime.now(TZ).date() - timedelta(weeks=weeks_ago)
+    return datetime(day.year, day.month, day.day, hour, tzinfo=TZ)
+
+
 class DayApiTest(unittest.TestCase):
     """/api/day is the contract the React client renders from."""
 
@@ -185,7 +139,8 @@ class DayApiTest(unittest.TestCase):
 
         self.assertIsNotNone(typical)
         self.assertEqual(typical["weeks"], 3)
-        self.assertTrue(all(len(point) == 2 for point in typical["points"]))
+        # [minuteOfDay, median, low, high]
+        self.assertTrue(all(len(point) == 4 for point in typical["points"]))
 
     def test_typical_does_not_depend_on_today_having_data(self):
         """Just after midnight the typical curve is the only thing worth drawing"""

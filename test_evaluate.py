@@ -69,6 +69,112 @@ class SpreadTest(unittest.TestCase):
         self.assertIsNone(evaluate.spread_of({0: [0.5]}))
 
 
+class DispersionMetricTest(unittest.TestCase):
+    def test_small_samples_use_the_range(self):
+        self.assertAlmostEqual(evaluate.dispersion([0.2, 0.5, 0.7]), 0.5)
+
+    def test_large_samples_use_the_interquartile_range(self):
+        values = [0.40, 0.42, 0.44, 0.46, 0.48, 0.50, 0.52, 0.54]
+        self.assertLess(
+            evaluate.dispersion(values), max(values) - min(values),
+            "IQR must be tighter than the range it replaces",
+        )
+
+    def test_a_single_outlier_moves_the_range_but_not_the_iqr(self):
+        steady = [0.50] * 11
+        with_closure = steady + [0.0]          # one holiday closure
+
+        # the range doubles the story; the IQR ignores it, as the median does
+        self.assertAlmostEqual(evaluate.dispersion(with_closure), 0.0, places=6)
+        self.assertAlmostEqual(max(with_closure) - min(with_closure), 0.5)
+
+    def test_range_inflates_with_sample_count_which_is_why_it_is_replaced(self):
+        """Same distribution, more samples: the range grows, so it is not
+        comparable across cohorts of different size."""
+        import random
+        random.seed(11)
+        draw = lambda n: [random.gauss(0.5, 0.08) for _ in range(n)]
+        small = max(s := draw(4)) - min(s)
+        large = max(l := draw(40)) - min(l)
+
+        self.assertGreater(large, small * 1.5)
+
+    def test_too_few_values_to_disagree(self):
+        self.assertIsNone(evaluate.dispersion([0.5]))
+        self.assertIsNone(evaluate.dispersion([]))
+
+
+class WeekdayBandsTest(unittest.TestCase):
+    """The curve the dashboard draws and the backtest scores -- one function."""
+
+    def monday(self, weeks_back, hour, minute=0, count=100):
+        day = date(2026, 9, 7) - timedelta(weeks=weeks_back)   # 2026-09-07 is a Monday
+        return at(datetime(day.year, day.month, day.day, hour, minute, tzinfo=TZ), count)
+
+    def bands(self, readings, target=date(2026, 9, 7)):
+        return evaluate.weekday_bands(readings, target, TZ, BUCKET)
+
+    def test_target_day_is_excluded_from_its_own_band(self):
+        readings = [self.monday(1, 8, count=100), self.monday(2, 8, count=100),
+                    self.monday(0, 8, count=0)]          # the day being viewed
+        bands, weeks, _ = self.bands(readings)
+
+        self.assertEqual(weeks, 2, "the viewed day must not count as an instance")
+        self.assertAlmostEqual(bands[16]["median"], 100 / 150)
+
+    def test_median_resists_a_single_closure(self):
+        readings = [self.monday(w, 8, count=90) for w in (1, 2, 3)]
+        readings.append(self.monday(4, 8, count=0))
+        bands, _, _ = self.bands(readings)
+
+        self.assertAlmostEqual(bands[16]["median"], 90 / 150, msg="a mean would sag")
+        self.assertAlmostEqual(bands[16]["low"], 0.0, msg="but the band still shows it")
+
+    def test_samples_group_into_half_hour_buckets(self):
+        readings = [self.monday(1, 8, 5, count=60), self.monday(1, 8, 25, count=90),
+                    self.monday(1, 8, 45, count=150)]
+        bands, _, _ = self.bands(readings)
+
+        self.assertAlmostEqual(bands[16]["median"], 75 / 150, msg="median of 60 and 90")
+        self.assertAlmostEqual(bands[17]["median"], 1.0)
+
+    def test_other_weekdays_are_ignored(self):
+        tuesday = at(datetime(2026, 9, 1, 8, tzinfo=TZ), 140)
+        bands, weeks, _ = self.bands([tuesday])
+
+        self.assertEqual((bands, weeks), ({}, 0))
+
+    def test_band_carries_the_range_across_instances(self):
+        readings = [self.monday(1, 8, count=30), self.monday(2, 8, count=90),
+                    self.monday(3, 8, count=120)]
+        bands, _, _ = self.bands(readings)
+
+        self.assertAlmostEqual(bands[16]["low"], 30 / 150)
+        self.assertAlmostEqual(bands[16]["high"], 120 / 150)
+        self.assertAlmostEqual(bands[16]["median"], 90 / 150)
+
+
+class WindowSpreadTest(unittest.TestCase):
+    """Gating reads the window it is about to suggest, not the whole day."""
+
+    def test_window_spread_ignores_buckets_outside_the_window(self):
+        bands = {
+            16: {"median": 0.5, "low": 0.48, "high": 0.52},   # steady morning
+            17: {"median": 0.5, "low": 0.49, "high": 0.51},
+            36: {"median": 0.5, "low": 0.10, "high": 0.90},   # chaotic evening
+        }
+        morning = evaluate.band_spread(bands, [16, 17])
+        evening = evaluate.band_spread(bands, [36])
+
+        self.assertLess(morning, 0.05)
+        self.assertGreater(evening, 0.7)
+        self.assertLess(morning, evaluate.spread_of({k: [v["low"], v["high"]]
+                                                     for k, v in bands.items()}))
+
+    def test_unknown_buckets_are_skipped(self):
+        self.assertIsNone(evaluate.band_spread({}, [16, 17]))
+
+
 class BacktestTest(unittest.TestCase):
     """The point of a backtest is that the model cannot see the day it scores."""
 

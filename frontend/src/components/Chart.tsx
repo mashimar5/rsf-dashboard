@@ -38,10 +38,22 @@ export function Chart({ day }: { day: DayView }) {
   const typicalPoints = useMemo(
     () =>
       day.typical?.points
-        .map(([minute, fraction]) => `${x(minute).toFixed(1)},${y(fraction).toFixed(1)}`)
+        .map(([minute, median]) => `${x(minute).toFixed(1)},${y(median).toFixed(1)}`)
         .join(' ') ?? '',
     [day.typical],
   )
+
+  // A closed polygon: along the highs, back along the lows. Shows how much
+  // past instances of this weekday disagreed, so the dashed median line does
+  // not imply precision the data does not have.
+  const bandPolygon = useMemo(() => {
+    const points = day.typical?.points
+    if (!points || points.length < 2) return ''
+    const highs = points.map(([minute, , , high]) => `${x(minute).toFixed(1)},${y(high).toFixed(1)}`)
+    const lows = [...points].reverse()
+      .map(([minute, , low]) => `${x(minute).toFixed(1)},${y(low).toFixed(1)}`)
+    return [...highs, ...lows].join(' ')
+  }, [day.typical])
 
   function track(event: React.PointerEvent<HTMLDivElement>) {
     const box = svgRef.current?.getBoundingClientRect()
@@ -95,6 +107,9 @@ export function Chart({ day }: { day: DayView }) {
                   opacity={tick === 0 || tick === 100 ? 1 : 0.45} />
           ))}
 
+          {bandPolygon && (
+            <polygon points={bandPolygon} fill="var(--dim)" opacity={0.13} stroke="none" />
+          )}
           {typicalPoints && (
             <polyline points={typicalPoints} fill="none" stroke="var(--dim)" strokeWidth={2}
                       strokeDasharray="5 4" strokeLinejoin="round" strokeLinecap="round"
@@ -143,7 +158,12 @@ export function Chart({ day }: { day: DayView }) {
           <span><i className="today" />{day.shortLabel} · {day.samples.length} samples</span>
         )}
         {day.typical && (
-          <span><i className="typical" />Typical {day.typical.weekday} · {day.typical.weeks} weeks</span>
+          <span>
+            <i className="typical" />
+            Typical {day.typical.weekday} · {day.typical.weeks} weeks
+            {day.typical.spread != null &&
+              ` · ±${Math.round(day.typical.spread * 50)}pt spread`}
+          </span>
         )}
       </div>
     </div>
