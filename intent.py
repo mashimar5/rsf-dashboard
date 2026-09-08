@@ -30,8 +30,24 @@ SESSIONS_PER_WEEK_RANGE = (1, 14)
 
 
 class Preferences(BaseModel):
-    """What the user asked for, as parameters the policy already understands."""
+    """What the user asked for, as parameters the policy already understands.
 
+    Field order is load-bearing. Structured output is generated left to right,
+    so `clauses` is first on purpose: it makes the model enumerate everything
+    stated before it commits to any value. Without it, extraction was
+    order-dependent -- "four times a week, and never more than half full" gave
+    the frequency and silently dropped the ceiling, while the same two clauses
+    reversed gave both.
+    """
+
+    clauses: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every distinct preference stated, one per item, in the order said."
+            " Fill this in first, before any other field, and include a clause"
+            " even when you are unsure it maps to a field below."
+        ),
+    )
     session_minutes: int | None = Field(
         None, description="How long a workout should be, in minutes."
     )
@@ -101,7 +117,7 @@ class Preferences(BaseModel):
         return all(
             getattr(self, field) is None
             for field in self.model_fields
-            if field != "summary"
+            if field not in ("summary", "clauses")
         )
 
 
@@ -115,6 +131,9 @@ SYSTEM = """You turn a sentence about someone's gym schedule into structured \
 preferences for a scheduling tool.
 
 Rules:
+- List every clause in `clauses` first, then work through them one at a time.
+  A sentence often states several preferences; dropping the later ones is the
+  most common mistake.
 - Only fill a field the person actually expressed. Leave everything else null.
   Inventing a preference is worse than returning nothing.
 - Hours are local wall-clock, 0-23. "mornings" is not an hour; only set
