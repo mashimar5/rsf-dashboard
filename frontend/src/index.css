@@ -132,3 +132,5 @@ h2 { font-size: .8125rem; font-weight: 600; color: var(--dim); margin: 0;
                background: var(--card); color: var(--fg); cursor: pointer; }
 .askrow .act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .askrow .act:disabled { opacity: .5; cursor: default; }
+
+.suggestions .level .record { opacity: .8; }

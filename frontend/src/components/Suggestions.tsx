@@ -71,6 +71,7 @@ export function Suggestions({ suggestions, auth, booking, onChange }: Props) {
                 {window.spread != null && window.spread > 0.2 && (
                   <em title="past weeks disagreed a lot here"> · rough estimate</em>
                 )}
+                {window.note && <em className="record"> · {window.note}</em>}
               </span>
               {auth.signedIn && (
                 sameInstant(booking?.start, window.start) ? (

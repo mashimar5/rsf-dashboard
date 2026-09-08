@@ -22,6 +22,9 @@ WIND_DOWN_MINUTES = 15
 # question asked and is useless as advice.
 CROWDING_CEILING = 0.85
 MAX_SUGGESTIONS = 3
+# Below this many resolved outcomes, a section's record is noise rather than a
+# pattern -- the same instinct as hiding the curve below three instances.
+MIN_OUTCOMES = 4
 
 # Parts of the day, by the minute a window starts. One suggestion from each
 # gives genuinely different choices to match against a schedule; the three
@@ -171,3 +174,45 @@ def suggest_by_section(bands, midnight, day_hours, bucket_minutes, busy=(), not_
             best[window.section] = window
 
     return Suggestions(sorted(best.values(), key=lambda w: w.start))
+
+
+def outcomes_by_section(outcomes, tz):
+    """How suggestions in each part of the day have actually fared.
+
+    Counting, not learning. One booking a day means roughly thirty examples a
+    month; nothing is gained by fitting a model to that, and a tally stays
+    interpretable at a sample size where a classifier would only be confident.
+
+    Returns {section: {shown, booked, attended, skipped, answered}}.
+    """
+    tally: dict[str, dict[str, int]] = {}
+    for outcome in outcomes:
+        local = datetime.fromisoformat(outcome["window_start"]).astimezone(tz)
+        minute = local.hour * 60 + local.minute
+        section = tally.setdefault(
+            section_of(minute),
+            {"shown": 0, "booked": 0, "attended": 0, "skipped": 0, "answered": 0},
+        )
+        section["shown"] += 1
+        if outcome["booked"]:
+            section["booked"] += 1
+        if outcome["went"] is not None:
+            section["answered"] += 1
+            section["attended" if outcome["went"] else "skipped"] += 1
+    return tally
+
+
+def section_note(stats):
+    """A short, honest remark about a section's record, or None.
+
+    Deliberately annotates rather than suppresses. Dropping a section the user
+    has skipped would destroy the evidence that would later revise that
+    judgement -- with samples this small, exploring beats exploiting.
+    """
+    if not stats or stats["answered"] < MIN_OUTCOMES:
+        return None
+    if stats["skipped"] and stats["skipped"] / stats["answered"] >= 0.75:
+        return f"you skipped {stats['skipped']} of {stats['answered']} of these"
+    if stats["attended"] and stats["attended"] / stats["answered"] >= 0.75:
+        return f"you went to {stats['attended']} of {stats['answered']} of these"
+    return None

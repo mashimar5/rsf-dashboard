@@ -321,5 +321,31 @@ def delete_booking(connection: sqlite3.Connection, for_date: date) -> None:
     connection.commit()
 
 
+def prediction_outcomes(connection: sqlite3.Connection) -> list[dict]:
+    """Every logged suggestion with what became of it.
+
+    booked is whether it was confirmed; went is None when never answered,
+    which is a different signal from answering no.
+    """
+    rows = connection.execute(
+        """SELECT p.window_start, p.window_end, p.predicted_pct,
+                  b.event_id IS NOT NULL AS booked, f.went
+           FROM predictions p
+           LEFT JOIN bookings b ON b.prediction_id = p.id
+           LEFT JOIN feedback f ON f.prediction_id = p.id
+           ORDER BY p.window_start"""
+    ).fetchall()
+    return [
+        {
+            "window_start": row["window_start"],
+            "window_end": row["window_end"],
+            "predicted_pct": row["predicted_pct"],
+            "booked": bool(row["booked"]),
+            "went": None if row["went"] is None else bool(row["went"]),
+        }
+        for row in rows
+    ]
+
+
 def count_rows(connection: sqlite3.Connection) -> int:
     return connection.execute("SELECT COUNT(*) FROM readings").fetchone()[0]

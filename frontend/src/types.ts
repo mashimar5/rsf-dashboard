@@ -55,6 +55,9 @@ export interface SuggestedWindow {
    *  instance backs them. Wide means treat the number loosely. */
   spread: number | null
   section: string | null
+  /** How this part of the day has fared before, once there is enough
+   *  evidence to say. Advisory: it never removes a suggestion. */
+  note: string | null
 }
 
 export interface SuggestionSet {

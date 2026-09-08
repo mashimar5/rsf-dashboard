@@ -587,6 +587,9 @@ def day_view(connection, viewed, today, earliest_day):
             busy=busy_today(midnight, connection),
             not_before=datetime.now(LOCAL_TZ),
         )
+        history = policy.outcomes_by_section(
+            store.prediction_outcomes(connection), LOCAL_TZ
+        )
         windows = []
         for window in found.windows:
             # recorded as shown: the model will change, and recomputing later
@@ -601,6 +604,9 @@ def day_view(connection, viewed, today, earliest_day):
                 "predictedPct": window.predicted_pct,
                 "spread": window.spread,
                 "section": window.section,
+                # what actually happened last time this part of the day was
+                # suggested; annotation only, never suppression
+                "note": policy.section_note(history.get(window.section)),
             })
         suggestions = {"windows": windows, "refusal": found.refusal}
 
