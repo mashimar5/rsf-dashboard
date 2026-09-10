@@ -36,8 +36,12 @@ Backend pieces, each independent:
 
 - **Occupancy** comes from the Density sensor API behind the RSF's public crowd
   meter. The share token cannot be used directly: it is exchanged for a
-  15-minute access token, which is then used to read the display endpoint. The
-  response carries no measurement time, so readings are stamped at fetch time.
+  short-lived access token, which is then used to read the display endpoint.
+  **The exchange runs on every poll and the token is discarded** — it is valid
+  for 15 minutes, but caching it would buy one saved request per four-minute
+  cycle in exchange for expiry handling and a retry-on-401 path, so the
+  stateless version wins at this rate. The response carries no measurement
+  time, so readings are stamped at fetch time.
 - **History** is appended to Postgres. The collector runs in-process in
   deployment, and can be run standalone or from cron locally.
 - **Opening hours** are scraped from the RecWell hours page, which carries up to
@@ -100,10 +104,11 @@ Collect readings — one-shot, so cron can drive it:
 .venv/bin/python collect.py
 ```
 
-Or run it standalone with its own timer:
+Or run it standalone with its own timer. Deployment uses 240 seconds — see
+Configuration for why:
 
 ```bash
-.venv/bin/python collect.py --interval 300
+.venv/bin/python collect.py --interval 240
 ```
 
 Google sign-in needs the OAuth variables below; without them the dashboard runs
@@ -239,11 +244,12 @@ copies the built assets in.
 
 ## Notes on a few decisions
 
-**Timestamps are stored in UTC and compared in UTC.** They are compared as text,
-so any local-time bound must be converted first — a local midnight compared
-against `+00:00` values silently pulls in the previous evening. The same class of
-bug appeared three times: in a query bound, in an ad-hoc SQL comparison, and in
-a frontend `===` between two spellings of the same instant.
+**Never compare timestamps as text in the frontend.** The database no longer
+allows this mistake — see `timestamptz` below — but JavaScript still does. The
+same instant arrives as `…T16:30:00+00:00` from one source and
+`…T09:30:00-07:00` from another, and `===` between them is false, which once
+meant a confirmed booking never displayed as confirmed. `sameInstant()` in
+`lib/format.ts` parses before comparing; use it.
 
 **Postgres, not SQLite — for two specific reasons, not for scale.** At a few
 thousand rows SQLite was the right tool and stayed right for weeks.
@@ -260,8 +266,8 @@ The second is that `timestamptz` retires a bug class rather than defending
 against it. SQLite stored times as text, and comparing ISO strings in different
 offsets caused four separate bugs here — a query bound, an ad-hoc query, a
 frontend `===`, and an unnormalised write. A column that holds an instant
-cannot be compared wrongly. The frontend still compares times in JavaScript,
-which is why `sameInstant()` exists; that half of the hazard is unchanged.
+cannot be compared wrongly. Only the frontend half of the hazard survives,
+which is the note above.
 
 **Connections come from a pool** and are returned on request teardown. A
 Postgres connection is a socket and a server-side process, unlike a SQLite
