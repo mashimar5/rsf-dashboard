@@ -10,10 +10,11 @@ weight rooms, and an agent that suggests when to go.
 Python · Flask · Postgres · SQL · React 19 · TypeScript · Vite · Claude API · Google OAuth · Docker · Fly.io · GitHub Actions
 
 Shows how full the weight rooms are right now, the day's occupancy curve, and
-any previous day's. A collector records a reading every five minutes, so the
+any previous day's. A collector records a reading every four minutes, so the
 history builds on its own. Once a weekday has enough history, it also proposes
 workout windows around your calendar and — on one click — writes the chosen one
-to a calendar it created.
+to a calendar it created. A chat panel answers open-ended questions about the
+data and sets the preferences that shape those suggestions.
 
 ## How it works
 
@@ -137,7 +138,8 @@ works locally only because it was installed once and never declared.
 | `/api/hours` | What the hours scraper parsed, which table each day resolved to, and the cache age. Use this when the hours line disappears. |
 | `/api/book` | `POST` writes a suggested window to the calendar; `DELETE` cancels it. Signed in only. |
 | `/api/feedback` | `POST` records whether a booked session happened. |
-| `/api/preferences` | `POST` turns a sentence into scheduling parameters; `DELETE` clears them. |
+| `/api/ask` | `POST` a transcript; answers questions about the data and sets scheduling preferences. Signed in only, rate limited. |
+| `/api/preferences` | `DELETE` clears scheduling preferences. |
 | `/auth/google`, `/auth/callback`, `/auth/logout` | Google sign-in. |
 | `/health` | Liveness. Returns 503 only for conditions a restart could fix; Fly's health check watches this. |
 | `/health/freshness` | Returns 503 when readings have stopped. For an external uptime monitor, which pages a human rather than restarting. |
@@ -154,7 +156,7 @@ works locally only because it was installed once and never declared.
 | `PORT` | `5001` | Web server port. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | OAuth client. Calendar features are simply absent without them. |
 | `ALLOWED_EMAILS` | empty | Comma-separated allowlist. Empty admits nobody, so a misconfigured deploy fails closed. |
-| `ANTHROPIC_API_KEY` | — | Enables free-text preferences. Absent, the input is hidden and everything else works. |
+| `ANTHROPIC_API_KEY` | — | Enables the data chat. Absent, the panel is hidden and everything else works. |
 | `SECRET_KEY` | — | Signs the session cookie. |
 | `TOKEN_ENCRYPTION_KEY` | — | Fernet key encrypting stored refresh tokens. |
 
@@ -224,7 +226,8 @@ for current occupancy.
 | `evaluate.py` | The typical-weekday curve, dispersion, scoring and backtesting. |
 | `policy.py` | Turning a forecast into suggested windows. |
 | `google_auth.py` | OAuth, free/busy, and calendar writes. |
-| `intent.py` | Free-text preferences to validated parameters, via the Claude API. |
+| `intent.py` | The preferences schema, and the bounds a schema cannot enforce. |
+| `ask.py` | The data chat: tools over vetted queries, and the conversation loop. |
 | `app.py` | Flask routes and the day view model. |
 | `frontend/src/App.tsx` | Top-level view: fetches `/api/day`, owns the selected date. |
 | `frontend/src/components/` | `Chart`, `StatTiles`, `DayNav`, `Suggestions`, `Feedback`. |
@@ -317,13 +320,38 @@ public. Filtering suggestions by a calendar leaks that calendar: the difference
 between the publicly computable quietest windows and the ones shown is exactly
 the user's schedule, so gating was not optional.
 
-**The model sits at the edge, not in the loop.** `intent.py` is the only place
-that calls an LLM, and it runs once — when you describe what you want in
-words. What it returns is validated and stored as plain numbers, and every
-downstream decision reads those numbers. A suggestion is therefore never one
-model call away from being different, the policy stays unit-testable without a
-network, and the feature degrades to "hidden" rather than "broken" when no API
-key is set.
+**The model sits at the edge, not in the loop.** `ask.py` is the only place
+that calls an LLM. Preferences it sets are stored as plain numbers, and every
+downstream decision — which windows are eligible, how they rank, what gets
+booked — reads those numbers. A suggestion is therefore never one model call
+away from being different, the policy stays unit-testable without a network,
+and the feature degrades to "hidden" rather than "broken" when no API key is
+set.
+
+**The model gets tools, not a database.** Eight vetted queries with typed
+arguments: the data overview, narrower slices, the weekday curve, past
+sessions, and three that read or write the single settings row. A confused
+model can ask a sensible question of the wrong slice; it cannot write SQL,
+reach another table, or touch anything but that one row. Bad arguments come
+back as `{"error": …}` rather than exceptions.
+
+**Handing over the whole dataset beats querying it.** The first version of the
+chat had four narrow lookups and could answer "what was X" but never find a
+pattern, because it never saw more than one slice at a time. A weekday-by-hour
+grid is 7 × 24 = 168 cells however long collection runs — about 550 tokens — so
+the entire shape fits in context and the model reasons across it. That was an
+architectural fix, not a prompting one.
+
+**One text input, not two.** Preferences used to have their own box, which
+looked like a chat, didn't reply, and silently changed the suggestions above
+it. They are now set through the chat, because a preference is local, visible
+and reversible in a sentence. Booking is not, and keeps its explicit click —
+the chat has no booking tool at all.
+
+**Each answer shows which tools it read**, so a claim can be checked against
+what it actually looked at rather than trusted. The chat is rate limited per
+hour: every turn costs money and runs several queries, and an unbounded loop of
+paid calls is the failure mode worth preventing.
 
 Structured output guarantees the *shape* of what comes back, not its sense —
 `session_minutes: 600` is schema-valid nonsense. Ranges are enforced after
