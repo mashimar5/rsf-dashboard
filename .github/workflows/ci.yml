@@ -47,6 +47,12 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -p 'test_*.py' --verbose
 
+      # Structural claims only -- routes, environment variables, file names.
+      # Prose drift ("the token is cached") is not mechanically checkable and
+      # still needs a reader.
+      - name: Check the README against the code
+        run: python tools/check_readme.py
+
   frontend:
     name: TypeScript build
     runs-on: ubuntu-latest

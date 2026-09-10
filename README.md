@@ -132,6 +132,11 @@ a frontend build, and a Docker build. The Python job installs from
 `requirements.txt` on a clean machine, which is what catches a dependency that
 works locally only because it was installed once and never declared.
 
+`tools/check_readme.py` also runs in CI and fails the build when this file
+documents a route, environment variable, or module the code does not have — or
+omits one it does. Only structural claims can be checked that way; prose like
+"the token is cached" is a claim about behaviour and still needs a reader.
+
 ## Endpoints
 
 | Path | Purpose |
