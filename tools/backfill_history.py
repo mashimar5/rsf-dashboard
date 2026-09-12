@@ -30,11 +30,22 @@ Safe to re-run: rows are keyed by instant.
     DATABASE_URL=... python tools/backfill_history.py [--dry-run] [--replace] [source]
 
 `source` is a URL or a local path, and defaults to the published file.
+
+Production does not clean anything. Parsing five years of rows takes about
+145 MB, and the 256 MB machine running the app and the collector has about
+70 MB free, so cleaning there could starve the collector. The file is cleaned
+locally and exported, and the machine streams the exported rows into COPY one
+at a time:
+
+    python tools/backfill_history.py --export history-clean.csv
+    fly ssh sftp put history-clean.csv /tmp/history-clean.csv
+    fly ssh console -C "python tools/backfill_history.py --cleaned /tmp/history-clean.csv"
 """
 
 import argparse
 import sys
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -74,6 +85,23 @@ class Report:
     frozen_rows: int = 0
 
 
+def _row(number: int, stamp: str, count_text: str) -> Row:
+    """One validated row; errors name the row so a bad file can be fixed."""
+    try:
+        observed_at = datetime.fromisoformat(stamp)
+        count = int(count_text)
+    except ValueError as error:
+        raise ValueError(f"row {number}: {error}") from None
+    if observed_at.tzinfo is None:
+        raise ValueError(f"row {number}: {stamp} has no UTC offset")
+    observed_at = observed_at.astimezone(timezone.utc)
+    if observed_at.minute % 10 or observed_at.second or observed_at.microsecond:
+        raise ValueError(f"row {number}: {stamp} is not on the ten-minute grid")
+    if count < 0:
+        raise ValueError(f"row {number}: negative count {count}")
+    return Row(observed_at, count)
+
+
 def parse(lines) -> list[Row]:
     """Read the published CSV, refusing anything that does not look like it."""
     rows = []
@@ -83,19 +111,7 @@ def parse(lines) -> list[Row]:
         fields = line.strip().split(",")
         if len(fields) != 4:
             raise ValueError(f"row {number}: expected 4 columns, found {len(fields)}")
-        try:
-            observed_at = datetime.fromisoformat(fields[0])
-            count = int(fields[1])
-        except ValueError as error:
-            raise ValueError(f"row {number}: {error}") from None
-        if observed_at.tzinfo is None:
-            raise ValueError(f"row {number}: {fields[0]} has no UTC offset")
-        observed_at = observed_at.astimezone(timezone.utc)
-        if observed_at.minute % 10 or observed_at.second or observed_at.microsecond:
-            raise ValueError(f"row {number}: {fields[0]} is not on the ten-minute grid")
-        if count < 0:
-            raise ValueError(f"row {number}: negative count {count}")
-        rows.append(Row(observed_at, count))
+        rows.append(_row(number, fields[0], fields[1]))
     return rows
 
 
@@ -175,6 +191,29 @@ def load(conn, rows, replace: bool = False) -> int:
     return inserted
 
 
+def export(rows, path) -> None:
+    """Write kept rows as `instant,count`, the format --cleaned loads."""
+    with open(path, "w") as handle:
+        for row in rows:
+            handle.write(f"{row.observed_at.isoformat()},{row.count}\n")
+
+
+def read_cleaned(path) -> Iterator[Row]:
+    """Stream a file written by export(), one row at a time.
+
+    Nothing here builds a list: on the production machine the rows go straight
+    from the file into COPY, so memory stays flat however long the history is.
+    """
+    with open(path) as handle:
+        for number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            fields = line.strip().split(",")
+            if len(fields) != 2:
+                raise ValueError(f"row {number}: expected 2 columns, found {len(fields)}")
+            yield _row(number, fields[0], fields[1])
+
+
 def read_source(source: str) -> list[str]:
     if source.startswith(("http://", "https://")):
         response = requests.get(source, timeout=120)
@@ -209,24 +248,53 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Import cleaned occupancy history.")
     parser.add_argument("source", nargs="?", default=SOURCE_URL)
     parser.add_argument("--dry-run", action="store_true",
-                        help="report what would be kept and write nothing")
+                        help="report what would be loaded and write nothing")
     parser.add_argument("--replace", action="store_true",
                         help="empty the history table before loading")
     parser.add_argument("--verbose", action="store_true", help="list every excluded day")
+    parser.add_argument("--export", metavar="PATH",
+                        help="clean, write the kept rows to PATH, and write nothing to the database")
+    parser.add_argument("--cleaned", action="store_true",
+                        help="source is a file written by --export: stream it in without cleaning")
     args = parser.parse_args(argv)
+
+    if args.cleaned:
+        load_cleaned(args.source, dry_run=args.dry_run, replace=args.replace)
+        return
 
     rows = parse(read_source(args.source))
     with store.connection() as conn:
         first = store.earliest(conn)
         report = clean(rows, first.observed_at if first else None)
         print(describe(report, len(rows), args.verbose))
+        if args.export:
+            export(report.kept, args.export)
+            print(f"wrote {len(report.kept):,} rows to {args.export}; nothing written to the database")
+            return
         if args.dry_run:
             print("dry run: nothing written")
             return
-        before = conn.execute("SELECT COUNT(*) AS n FROM history").fetchone()["n"]
-        inserted = load(conn, report.kept, replace=args.replace)
-        after = conn.execute("SELECT COUNT(*) AS n FROM history").fetchone()["n"]
-        print(f"history table: {before:,} -> {after:,} ({inserted:,} inserted)")
+        write(conn, report.kept, args.replace)
+
+
+def write(conn, rows, replace: bool) -> None:
+    before = conn.execute("SELECT COUNT(*) AS n FROM history").fetchone()["n"]
+    inserted = load(conn, rows, replace=replace)
+    after = conn.execute("SELECT COUNT(*) AS n FROM history").fetchone()["n"]
+    print(f"history table: {before:,} -> {after:,} ({inserted:,} inserted)")
+
+
+def load_cleaned(path, dry_run: bool, replace: bool) -> None:
+    """Stream an exported file in. A bad row anywhere aborts the whole load."""
+    if dry_run:
+        count, first, last = 0, None, None
+        for row in read_cleaned(path):
+            count, first, last = count + 1, first or row.observed_at, row.observed_at
+        span = f", {first:%Y-%m-%d %H:%M}Z to {last:%Y-%m-%d %H:%M}Z" if count else ""
+        print(f"{count:,} valid rows{span}; dry run: nothing written")
+        return
+    with store.connection() as conn:
+        write(conn, read_cleaned(path), replace)
 
 
 if __name__ == "__main__":

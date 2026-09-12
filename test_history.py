@@ -150,11 +150,54 @@ class LoadTest(testing.DatabaseTest):
         self.assertEqual(backfill.load(self.connection, rows), 0)
         self.assertEqual(self.history_rows(), len(rows))
 
+    def test_a_stream_that_fails_part_way_loads_nothing(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "history-clean.csv"
+        backfill.export(ordinary_day(TERM_DAY), path)
+        with open(path, "a") as handle:
+            handle.write("not a timestamp,5\n")
+
+        with self.assertRaisesRegex(ValueError, "row 127"):
+            backfill.load(self.connection, backfill.read_cleaned(path))
+        self.connection.rollback()
+
+        self.assertEqual(self.history_rows(), 0)
+
     def test_replace_starts_over(self):
         backfill.load(self.connection, ordinary_day(TERM_DAY))
         backfill.load(self.connection, ordinary_day(TERM_DAY + timedelta(days=7))[:10], replace=True)
 
         self.assertEqual(self.history_rows(), 10)
+
+
+class ExportTest(unittest.TestCase):
+    """Production cleans nothing: it streams a file that was cleaned elsewhere."""
+
+    def path(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name) / "history-clean.csv"
+
+    def test_an_exported_file_reads_back_as_the_same_rows(self):
+        rows, path = ordinary_day(TERM_DAY), self.path()
+        backfill.export(rows, path)
+
+        self.assertEqual(list(backfill.read_cleaned(path)), rows)
+
+    def test_a_cleaned_file_is_still_checked_row_by_row(self):
+        path = self.path()
+        path.write_text("2025-10-14T22:40:00+00:00,87\n2025-10-14T22:45:00+00:00,88\n")
+
+        with self.assertRaisesRegex(ValueError, "row 2"):
+            list(backfill.read_cleaned(path))
+
+    def test_the_raw_file_is_not_mistaken_for_a_cleaned_one(self):
+        path = self.path()
+        path.write_text("2025-10-14T22:40:00+00:00,87,80,95\n")
+
+        with self.assertRaisesRegex(ValueError, "2 columns"):
+            list(backfill.read_cleaned(path))
 
 
 class OccupancyViewTest(testing.DatabaseTest):

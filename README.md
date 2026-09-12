@@ -199,11 +199,21 @@ deployment, and an importer that refused a non-empty target would have bailed
 mid-cutover.
 
 `tools/backfill_history.py` imports the sensor history the same way, idempotent
-on the instant. It runs once from inside the machine, so `DATABASE_URL` never
-leaves Fly: `fly ssh console -C "python tools/backfill_history.py --dry-run"`
-reports what the cleaning rules would keep, and the same command without
-`--dry-run` writes it. `TRUNCATE history` undoes it without touching a single
-live reading.
+on the instant, but production never cleans anything. Parsing five years of
+rows takes about 145 MB, and the 256 MB machine that runs the app and the
+collector has about 70 MB free, with no swap. So the file is cleaned and
+exported locally, copied onto the machine, and streamed into COPY one row at a
+time, which stays flat at about 45 MB. The load runs from inside the machine,
+so `DATABASE_URL` never leaves Fly:
+
+```bash
+python tools/backfill_history.py --export history-clean.csv
+fly ssh sftp put history-clean.csv /tmp/history-clean.csv
+fly ssh console -C "python tools/backfill_history.py --cleaned /tmp/history-clean.csv"
+```
+
+A bad row anywhere in the file aborts the whole load, and `TRUNCATE history`
+undoes it without touching a single live reading.
 
 ```bash
 fly deploy
