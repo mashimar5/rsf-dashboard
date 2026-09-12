@@ -29,8 +29,11 @@ IQR_MIN_INSTANCES = 8
 # November a "typical Monday" blends quiet late-August ones with busy October
 # ones, and by spring it folds in winter break. The curve would degrade as
 # data accumulated. Eight is roughly two months -- long enough to be stable,
-# short enough to stay inside one semester -- and it is also where dispersion
+# short enough to track a semester -- and it is also where dispersion
 # switches to IQR, so the window fills and the metric upgrades together.
+# Instances are drawn from the same kind of academic period as the target
+# (store.weekday_bands), so the window can reach back past a summer without
+# averaging it in.
 WINDOW_INSTANCES = 8
 
 
@@ -132,17 +135,21 @@ def spread_of(buckets: dict[int, list[float]]):
     return mean(spreads) if spreads else None
 
 
-def backtest(conn, readings, target: date, tz, bucket_minutes: int, window_minutes: int = 60):
+def backtest(conn, readings, target: date, tz, bucket_minutes: int, window_minutes: int = 60,
+             match_period: bool = True):
     """Score the curve against one day it never saw.
 
     Returns None when there is not enough prior history, mirroring the rule
-    that the curve stays hidden below three prior instances.
+    that the curve stays hidden below three prior instances. `match_period`
+    is passed to the curve, so one day can be scored both with and without
+    comparing like periods.
     """
     import store   # imported lazily: store calls back into this module
 
     midnight = datetime(target.year, target.month, target.day, tzinfo=tz)
     bands, weeks, spread = store.weekday_bands(
-        conn, target, str(tz), bucket_minutes, WINDOW_INSTANCES, before=midnight
+        conn, target, str(tz), bucket_minutes, WINDOW_INSTANCES, before=midnight,
+        match_period=match_period,
     )
     if weeks < 3 or not bands:
         return None

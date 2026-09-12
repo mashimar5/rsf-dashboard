@@ -148,7 +148,7 @@ class WeekdayBandsTest(testing.DatabaseTest):
         self.seed(1, 8, 150, minute=45)
         bands, _, _ = self.bands()
 
-        self.assertAlmostEqual(bands[16]["median"], 75 / 150, msg="median of 60 and 90")
+        self.assertAlmostEqual(bands[16]["median"], 75 / 150, msg="the half hour's mean of 60 and 90")
         self.assertAlmostEqual(bands[17]["median"], 1.0)
 
     def test_other_weekdays_are_ignored(self):
@@ -358,3 +358,88 @@ class StorageNormalisationTest(testing.DatabaseTest):
                               local + timedelta(minutes=1))
 
         self.assertEqual(len(found), 1)
+
+
+class PeriodMatchingTest(testing.DatabaseTest):
+    """A Monday in term is compared with Mondays in term, not with the summer
+    ones that happen to be most recent."""
+
+    ZONE = "America/Los_Angeles"
+    TARGET = date(2026, 9, 14)   # a Monday
+
+    def label(self, day, kind):
+        self.connection.execute(
+            "INSERT INTO calendar_days (day, kind, label) VALUES (%s, %s, %s)", (day, kind, kind))
+
+    def monday(self, weeks_back, count, kind):
+        day = self.TARGET - timedelta(weeks=weeks_back)
+        store.save(self.connection, at(datetime(day.year, day.month, day.day, 8, tzinfo=TZ), count))
+        self.label(day, kind)
+
+    def summer_then_term(self):
+        self.monday(1, 20, "summer")                  # the most recent Monday
+        for weeks_back in (2, 3, 4):
+            self.monday(weeks_back, 120, "instruction")
+
+    def bands(self, **options):
+        return store.weekday_bands(self.connection, self.TARGET, self.ZONE, BUCKET, 8, **options)
+
+    def test_instances_come_from_the_same_kind_of_period(self):
+        self.label(self.TARGET, "instruction")
+        self.summer_then_term()
+        bands, weeks, _ = self.bands()
+
+        self.assertEqual(weeks, 3)
+        self.assertAlmostEqual(bands[16]["low"], 120 / 150, msg="the summer Monday is no instance")
+
+    def test_matching_can_be_switched_off_to_measure_it(self):
+        self.label(self.TARGET, "instruction")
+        self.summer_then_term()
+        bands, weeks, _ = self.bands(match_period=False)
+
+        self.assertEqual(weeks, 4)
+        self.assertAlmostEqual(bands[16]["low"], 20 / 150)
+
+    def test_a_day_the_calendar_does_not_cover_falls_back_to_recency(self):
+        self.summer_then_term()                       # the target itself is unlabelled
+        _, weeks, _ = self.bands()
+
+        self.assertEqual(weeks, 4)
+
+    def test_imported_history_counts_as_instances(self):
+        self.label(self.TARGET, "instruction")
+        for weeks_back in (2, 3):
+            day = self.TARGET - timedelta(weeks=weeks_back)
+            self.connection.execute(
+                "INSERT INTO history (observed_at, count) VALUES (%s, %s)",
+                (datetime(day.year, day.month, day.day, 8, tzinfo=TZ), 90))
+            self.label(day, "instruction")
+        self.monday(1, 90, "instruction")
+        bands, weeks, _ = self.bands()
+
+        self.assertEqual(weeks, 3)
+        self.assertAlmostEqual(bands[16]["median"], 90 / 150)
+
+
+class SamplingRateTest(testing.DatabaseTest):
+    """Live collection samples every four minutes and imported history every
+    ten, so each day must get one vote however many readings it has."""
+
+    ZONE = "America/Los_Angeles"
+
+    def test_a_densely_sampled_day_does_not_outvote_sparse_ones(self):
+        target = date(2026, 9, 14)
+        dense = target - timedelta(weeks=1)
+        for minute in range(0, 30, 4):                     # eight readings at 100
+            store.save(self.connection, at(
+                datetime(dense.year, dense.month, dense.day, 8, minute, tzinfo=TZ), 100))
+        for weeks_back, count in ((2, 50), (3, 60)):       # three readings each
+            day = target - timedelta(weeks=weeks_back)
+            for minute in (0, 10, 20):
+                store.save(self.connection, at(
+                    datetime(day.year, day.month, day.day, 8, minute, tzinfo=TZ), count))
+        bands, weeks, _ = store.weekday_bands(self.connection, target, self.ZONE, BUCKET, 8)
+
+        # pooled, eight of the fourteen readings are 100, so the median would be 100
+        self.assertEqual(weeks, 3)
+        self.assertAlmostEqual(bands[16]["median"], 60 / 150)

@@ -19,7 +19,7 @@ TEST_DATABASE_URL = os.environ.get("RSF_TEST_DATABASE_URL", "postgresql:///rsf_t
 # development database -- which exists locally and does not in CI.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
-TABLES = "feedback, bookings, predictions, readings, app_state, google_tokens"
+TABLES = "feedback, bookings, predictions, readings, history, calendar_days, app_state, google_tokens"
 
 
 class DatabaseTest(unittest.TestCase):

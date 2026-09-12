@@ -1,0 +1,143 @@
+start,end,kind,label
+2021-08-18,2021-12-05,instruction,Fall 2021
+2021-11-24,2021-11-28,break,Thanksgiving break 2021
+2021-12-06,2021-12-12,rrr,Fall 2021 review week
+2021-12-13,2021-12-17,finals,Fall 2021 finals
+2021-12-18,2022-01-10,break,Winter break 2021-22
+2022-01-11,2022-05-01,instruction,Spring 2022
+2022-03-19,2022-03-27,break,Spring recess 2022
+2022-05-02,2022-05-08,rrr,Spring 2022 review week
+2022-05-09,2022-05-13,finals,Spring 2022 finals
+2022-05-14,2022-08-16,summer,Summer 2022
+2021-09-06,2021-09-06,holiday,Labor Day
+2021-11-11,2021-11-11,holiday,Veterans Day
+2021-11-25,2021-11-25,holiday,Thanksgiving
+2021-11-26,2021-11-26,holiday,Day after Thanksgiving
+2021-12-23,2021-12-24,holiday,Winter holiday
+2021-12-30,2021-12-31,holiday,Winter holiday
+2022-01-17,2022-01-17,holiday,Martin Luther King Jr. Day
+2022-02-21,2022-02-21,holiday,Presidents' Day
+2022-03-25,2022-03-25,holiday,Cesar Chavez Day
+2022-05-30,2022-05-30,holiday,Memorial Day
+2022-06-20,2022-06-20,holiday,Juneteenth (observed)
+2022-07-04,2022-07-04,holiday,Independence Day
+2022-08-17,2022-12-04,instruction,Fall 2022
+2022-11-23,2022-11-27,break,Thanksgiving break 2022
+2022-12-05,2022-12-11,rrr,Fall 2022 review week
+2022-12-12,2022-12-16,finals,Fall 2022 finals
+2022-12-17,2023-01-09,break,Winter break 2022-23
+2023-01-10,2023-04-30,instruction,Spring 2023
+2023-03-25,2023-04-02,break,Spring recess 2023
+2023-05-01,2023-05-07,rrr,Spring 2023 review week
+2023-05-08,2023-05-12,finals,Spring 2023 finals
+2023-05-13,2023-08-15,summer,Summer 2023
+2022-09-05,2022-09-05,holiday,Labor Day
+2022-11-11,2022-11-11,holiday,Veterans Day
+2022-11-24,2022-11-24,holiday,Thanksgiving
+2022-11-25,2022-11-25,holiday,Day after Thanksgiving
+2022-12-23,2022-12-23,holiday,Winter holiday
+2022-12-26,2022-12-26,holiday,Winter holiday
+2022-12-30,2022-12-30,holiday,Winter holiday
+2023-01-02,2023-01-02,holiday,Winter holiday
+2023-01-16,2023-01-16,holiday,Martin Luther King Jr. Day
+2023-02-20,2023-02-20,holiday,Presidents' Day
+2023-03-31,2023-03-31,holiday,Cesar Chavez Day
+2023-05-29,2023-05-29,holiday,Memorial Day
+2023-06-19,2023-06-19,holiday,Juneteenth
+2023-07-04,2023-07-04,holiday,Independence Day
+2023-08-16,2023-12-03,instruction,Fall 2023
+2023-11-22,2023-11-26,break,Thanksgiving break 2023
+2023-12-04,2023-12-10,rrr,Fall 2023 review week
+2023-12-11,2023-12-15,finals,Fall 2023 finals
+2023-12-16,2024-01-08,break,Winter break 2023-24
+2024-01-09,2024-04-28,instruction,Spring 2024
+2024-03-23,2024-03-31,break,Spring recess 2024
+2024-04-29,2024-05-05,rrr,Spring 2024 review week
+2024-05-06,2024-05-10,finals,Spring 2024 finals
+2024-05-11,2024-08-20,summer,Summer 2024
+2023-09-04,2023-09-04,holiday,Labor Day
+2023-11-10,2023-11-10,holiday,Veterans Day (observed)
+2023-11-23,2023-11-23,holiday,Thanksgiving
+2023-11-24,2023-11-24,holiday,Day after Thanksgiving
+2023-12-25,2023-12-25,holiday,Christmas
+2023-12-26,2023-12-26,holiday,Winter holiday
+2024-01-01,2024-01-01,holiday,New Year's Day
+2024-01-02,2024-01-02,holiday,Winter holiday
+2024-01-15,2024-01-15,holiday,Martin Luther King Jr. Day
+2024-02-19,2024-02-19,holiday,Presidents' Day
+2024-03-29,2024-03-29,holiday,Cesar Chavez Day
+2024-05-27,2024-05-27,holiday,Memorial Day
+2024-06-19,2024-06-19,holiday,Juneteenth
+2024-07-04,2024-07-04,holiday,Independence Day
+2024-08-21,2024-12-08,instruction,Fall 2024
+2024-11-27,2024-12-01,break,Thanksgiving break 2024
+2024-12-09,2024-12-15,rrr,Fall 2024 review week
+2024-12-16,2024-12-20,finals,Fall 2024 finals
+2024-12-21,2025-01-13,break,Winter break 2024-25
+2025-01-14,2025-05-04,instruction,Spring 2025
+2025-03-22,2025-03-30,break,Spring recess 2025
+2025-05-05,2025-05-11,rrr,Spring 2025 review week
+2025-05-12,2025-05-16,finals,Spring 2025 finals
+2025-05-17,2025-08-19,summer,Summer 2025
+2024-09-02,2024-09-02,holiday,Labor Day
+2024-11-11,2024-11-11,holiday,Veterans Day
+2024-11-28,2024-11-28,holiday,Thanksgiving
+2024-11-29,2024-11-29,holiday,Day after Thanksgiving
+2024-12-24,2024-12-24,holiday,Winter holiday
+2024-12-25,2024-12-25,holiday,Christmas
+2024-12-31,2024-12-31,holiday,Winter holiday
+2025-01-01,2025-01-01,holiday,New Year's Day
+2025-01-20,2025-01-20,holiday,Martin Luther King Jr. Day
+2025-02-17,2025-02-17,holiday,Presidents' Day
+2025-03-28,2025-03-28,holiday,Cesar Chavez Day
+2025-05-26,2025-05-26,holiday,Memorial Day
+2025-06-19,2025-06-19,holiday,Juneteenth
+2025-07-04,2025-07-04,holiday,Independence Day
+2025-08-20,2025-12-07,instruction,Fall 2025
+2025-11-26,2025-11-30,break,Thanksgiving break 2025
+2025-12-08,2025-12-14,rrr,Fall 2025 review week
+2025-12-15,2025-12-19,finals,Fall 2025 finals
+2025-12-20,2026-01-12,break,Winter break 2025-26
+2026-01-13,2026-05-03,instruction,Spring 2026
+2026-03-21,2026-03-29,break,Spring recess 2026
+2026-05-04,2026-05-10,rrr,Spring 2026 review week
+2026-05-11,2026-05-15,finals,Spring 2026 finals
+2026-05-16,2026-08-18,summer,Summer 2026
+2025-09-01,2025-09-01,holiday,Labor Day
+2025-11-11,2025-11-11,holiday,Veterans Day
+2025-11-27,2025-11-27,holiday,Thanksgiving
+2025-11-28,2025-11-28,holiday,Day after Thanksgiving
+2025-12-24,2025-12-24,holiday,Winter holiday
+2025-12-25,2025-12-25,holiday,Christmas
+2025-12-31,2025-12-31,holiday,Winter holiday
+2026-01-01,2026-01-01,holiday,New Year's Day
+2026-01-19,2026-01-19,holiday,Martin Luther King Jr. Day
+2026-02-16,2026-02-16,holiday,Presidents' Day
+2026-03-27,2026-03-27,holiday,Cesar Chavez Day
+2026-05-25,2026-05-25,holiday,Memorial Day
+2026-06-19,2026-06-19,holiday,Juneteenth
+2026-07-03,2026-07-03,holiday,Independence Day (observed)
+2026-08-19,2026-12-06,instruction,Fall 2026
+2026-11-25,2026-11-29,break,Thanksgiving break 2026
+2026-12-07,2026-12-13,rrr,Fall 2026 review week
+2026-12-14,2026-12-18,finals,Fall 2026 finals
+2026-12-19,2027-01-11,break,Winter break 2026-27
+2027-01-12,2027-05-02,instruction,Spring 2027
+2027-03-20,2027-03-28,break,Spring recess 2027
+2027-05-03,2027-05-09,rrr,Spring 2027 review week
+2027-05-10,2027-05-14,finals,Spring 2027 finals
+2027-05-15,2027-08-13,summer,Summer 2027
+2026-09-07,2026-09-07,holiday,Labor Day
+2026-11-11,2026-11-11,holiday,Veterans Day
+2026-11-26,2026-11-26,holiday,Thanksgiving
+2026-11-27,2026-11-27,holiday,Day after Thanksgiving
+2026-12-24,2026-12-24,holiday,Winter holiday
+2026-12-25,2026-12-25,holiday,Christmas
+2026-12-31,2026-12-31,holiday,Winter holiday
+2027-01-01,2027-01-01,holiday,New Year's Day
+2027-01-18,2027-01-18,holiday,Martin Luther King Jr. Day
+2027-02-15,2027-02-15,holiday,Presidents' Day
+2027-03-26,2027-03-26,holiday,Cesar Chavez Day
+2027-05-31,2027-05-31,holiday,Memorial Day
+2027-06-18,2027-06-18,holiday,Juneteenth (observed)
+2027-07-05,2027-07-05,holiday,Independence Day (observed)

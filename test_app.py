@@ -172,6 +172,13 @@ class DayApiTest(unittest.TestCase):
         # [minuteOfDay, median, low, high]
         self.assertTrue(all(len(point) == 4 for point in typical["points"]))
 
+    def test_typical_names_the_period_it_was_drawn_from(self):
+        """A curve built from last spring must not pass as simply "8 past Mondays"."""
+        with patch("store.period_of", return_value="instruction"):
+            typical = self._fetch(weeks=3)["typical"]
+
+        self.assertEqual(typical["period"], "instruction")
+
     def test_typical_does_not_depend_on_today_having_data(self):
         """Just after midnight the typical curve is the only thing worth drawing"""
         day = self._fetch(weeks=3, today_samples=0)

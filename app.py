@@ -766,6 +766,9 @@ def day_view(connection, viewed, today, earliest_day):
             "weekday": viewed.strftime("%A"),
             "spread": spread,
             "points": band_points(bands),
+            # what the instances were drawn from, so a curve built from last
+            # spring does not pass itself off as simply "8 past Mondays"
+            "period": store.period_of(connection, viewed),
         }
 
     # Suggestions are for today only: "when should I go" is not a question

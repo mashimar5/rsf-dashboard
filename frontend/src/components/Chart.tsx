@@ -2,6 +2,16 @@ import { useMemo, useRef, useState } from 'react'
 import type { DayView } from '../types'
 import { hourLabel, pct } from '../lib/format'
 
+/** How the legend names the period a typical curve was drawn from */
+const PERIOD_PHRASES: Record<string, string> = {
+  instruction: ' in term',
+  rrr: ' in review week',
+  finals: ' in finals',
+  break: ' in a break',
+  summer: ' in summer',
+  holiday: ' on a holiday',
+}
+
 const WIDTH = 720
 const HEIGHT = 180
 const MINUTES_IN_DAY = 1440
@@ -160,7 +170,7 @@ export function Chart({ day }: { day: DayView }) {
         {day.typical && (
           <span>
             <i className="typical" />
-            Typical {day.typical.weekday} · {day.typical.weeks} weeks
+            Typical {day.typical.weekday}{PERIOD_PHRASES[day.typical.period ?? ''] ?? ''} · {day.typical.weeks} weeks
             {day.typical.spread != null &&
               ` · ±${Math.round(day.typical.spread * 50)}pt spread`}
           </span>

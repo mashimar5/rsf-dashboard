@@ -59,6 +59,29 @@ class ToolTest(testing.DatabaseTest):
         self.assertLess(result["instances"], 3)
         self.assertIn("note", result)
 
+    def label(self, day, kind):
+        self.connection.execute(
+            "INSERT INTO calendar_days (day, kind, label) VALUES (%s, %s, %s)", (day, kind, kind))
+        self.connection.commit()
+
+    def test_the_overview_compares_like_with_like_by_default(self):
+        from datetime import date
+        self.label(date(2026, 9, 14), "instruction")
+        self.label(date(2026, 8, 31), "instruction")
+        self.label(date(2026, 7, 13), "summer")
+        self.seed(date(2026, 8, 31), 8, 120)    # a Monday in term
+        self.seed(date(2026, 7, 13), 8, 30)     # a Monday in summer
+
+        def monday_8am(result):
+            [row] = [r for r in result["weekday_hour_grid"]["rows"] if r[:2] == ["Monday", 8]]
+            return row[2], row[4]               # mean, days
+
+        with patch("ask._today", return_value=date(2026, 9, 14)):
+            self.assertEqual(monday_8am(call(ask.data_overview)), (0.8, 1))
+            self.assertEqual(monday_8am(call(ask.data_overview, period="summer")), (0.2, 1))
+            self.assertEqual(monday_8am(call(ask.data_overview, period="all")), (0.5, 2))
+            self.assertIn("error", call(ask.data_overview, period="semester"))
+
     def test_sessions_reports_nothing_when_nothing_is_booked(self):
         self.assertEqual(call(ask.my_sessions)["sessions"], [])
 

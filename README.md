@@ -10,19 +10,22 @@ weight rooms, and an agent that suggests when to go.
 Python · Flask · Postgres · SQL · React 19 · TypeScript · Vite · Claude API · Google OAuth · Docker · Fly.io · GitHub Actions
 
 Shows how full the weight rooms are right now, the day's occupancy curve, and
-any previous day's. A collector records a reading every four minutes, so the
-history builds on its own. Once a weekday has enough history, it also proposes
-workout windows around your calendar and — on one click — writes the chosen one
-to a calendar it created. A chat panel answers open-ended questions about the
-data and sets the preferences that shape those suggestions.
+any previous day's. A collector records a reading every four minutes, and five
+years of the same sensor's history from before that, cleaned on import, back
+the forecast. From it the dashboard proposes workout windows around your
+calendar and — on one click — writes the chosen one to a calendar it created. A
+chat panel answers open-ended questions about the data and sets the preferences
+that shape those suggestions.
 
 ## How it works
 
 ```
 Density API ──> collector ──> Postgres ─────┐
                 (every 4m)      (Neon)      │
+Sensor history (CSV) ──> one-time import ───┤
                                             ├──> Flask ──> React dashboard
 RecWell hours page ──> scraper ──> cache ───┤
+Registrar calendars ──> calendar CSV ───────┤
                                             │
 Google Calendar (free/busy) ────────────────┘
 ```
@@ -44,13 +47,21 @@ Backend pieces, each independent:
   time, so readings are stamped at fetch time.
 - **History** is appended to Postgres. The collector runs in-process in
   deployment, and can be run standalone or from cron locally.
+- **Imported history** covers the years before collection began: the sensor's
+  own ten-minute counts from September 2021, archived by Anthony Ozerov and
+  published under CC0 at <https://aozerov.com/berkeley/weightroom/>. It is
+  loaded once by `tools/backfill_history.py` into a separate `history` table
+  and cleaned on the way in — see the notes below.
+- **The academic calendar** (`data/academic_calendar.csv`, transcribed from the
+  Registrar's calendars) labels every day as instruction, review week, finals,
+  break, summer or holiday, and is synced into the database on startup.
 - **Opening hours** are scraped from the RecWell hours page, which carries up to
   three kinds of table. An explicit date beats a seasonal date range, which beats
   the undated standing schedule.
 - **Prediction** is a single SQL query (`store.weekday_bands`): a median per
-  half-hour bucket across the last few instances of that weekday, plus the
-  range. `evaluate.py` keeps the parts SQL has no answer for — choosing a
-  dispersion measure, scoring, backtesting.
+  half-hour bucket across the last eight instances of that weekday in the same
+  kind of academic period, plus the range. `evaluate.py` keeps the parts SQL
+  has no answer for — choosing a dispersion measure, scoring, backtesting.
 - **Suggestion** (`policy.py`) turns that curve into recommendations, filtered
   by opening hours and — when signed in — by Google Calendar free/busy.
 
@@ -187,6 +198,13 @@ mattered: the collector wrote its first row to the new database seconds after
 deployment, and an importer that refused a non-empty target would have bailed
 mid-cutover.
 
+`tools/backfill_history.py` imports the sensor history the same way, idempotent
+on the instant. It runs once from inside the machine, so `DATABASE_URL` never
+leaves Fly: `fly ssh console -C "python tools/backfill_history.py --dry-run"`
+reports what the cleaning rules would keep, and the same command without
+`--dry-run` writes it. `TRUNCATE history` undoes it without touching a single
+live reading.
+
 ```bash
 fly deploy
 ```
@@ -204,9 +222,10 @@ Three things that must stay as they are:
 ## Monitoring
 
 Ingestion cannot fail silently, which matters more here than in most pipelines
-because there is no replay: occupancy is a point-in-time measurement with no
-historical endpoint, so a missed poll is lost permanently rather than
-backfillable.
+because there is no replay: the endpoint this app polls returns a point-in-time
+reading, so a missed poll cannot be requested again. The years of history
+before collection began exist only because someone else archived them; that was
+a one-time import, not a way to fill tomorrow's gaps.
 
 | Signal | Endpoint | Watched by | On failure |
 | --- | --- | --- | --- |
@@ -230,7 +249,7 @@ for current occupancy.
 | File | Contents |
 | --- | --- |
 | `density.py` | The Density API client and the `Reading` dataclass. |
-| `store.py` | Postgres schema, queries, the connection pool, and the weekday-curve SQL. |
+| `store.py` | Postgres schema, queries, the connection pool, the weekday-curve SQL, and the calendar sync. |
 | `collect.py` | The recorder. One-shot by default. |
 | `hours.py` | Hours scraping, table selection, and caching. |
 | `evaluate.py` | The typical-weekday curve, dispersion, scoring and backtesting. |
@@ -243,6 +262,9 @@ for current occupancy.
 | `frontend/src/components/` | `Chart`, `StatTiles`, `DayNav`, `Suggestions`, `Feedback`. |
 | `frontend/src/types.ts` | The `/api/day` contract as TypeScript interfaces. |
 | `tools/make_icons.py` | Regenerates the home-screen icon. Needs Pillow, which is deliberately not a runtime dependency. |
+| `tools/backfill_history.py` | The one-time import of sensor history, and the rules that decide what to keep. |
+| `tools/backtest_curve.py` | Scores the curve against history it never saw, with and without period matching. |
+| `data/academic_calendar.csv` | Berkeley's academic periods and holidays, from the Registrar's calendars. |
 
 The Docker build is multi-stage: Node builds the frontend, then the Python image
 copies the built assets in.
@@ -300,6 +322,51 @@ upward and suggest the gym had become less predictable.
 every past Monday is weighted equally forever, so by November a typical Monday
 would blend quiet late-August ones with busy October ones — the curve would
 degrade as data accumulated.
+
+**Those instances come from the same kind of academic period.** A window alone
+breaks at every boundary: in mid-September the eight most recent Mondays are
+mostly summer ones, when the gym runs about 30% quieter and closes early, so
+the curve for a Monday in term read 67% at 5 PM and 0% at 9 PM instead of 85%
+and 89%. Each day is labelled from the Registrar's calendar, and the curve
+compares term with term, finals with finals, summer with summer. Backtested
+against 1,304 days from January 2023 to August 2026 that it had not seen,
+matching halves the mean error, from 12.8 to 6.7 points of capacity: 12.8 to
+7.6 in term, 8.5 to 4.5 in summer, and 24.0 to 5.3 in breaks, where plain
+recency forecast a term-sized crowd. Review week is the one period where it
+changes nothing (7.5 to 7.4). `tools/backtest_curve.py` reproduces the table.
+
+**Each instance gets one vote.** Live collection samples every four minutes and
+imported history every ten, so pooling readings would let a live day outvote a
+historical one about 2.5 to 1. Each day is averaged per half hour first and the
+median taken across days, which also makes the band a spread across instances —
+the thing the range-to-IQR switch was always counting.
+
+**Imported history lives in its own table**, read through an `occupancy` view
+that only analytics use. The collector, the day view, date navigation and both
+health checks read `readings` exactly as before, so nothing that describes live
+collection can be fooled by a five-year-old row, and the import can be undone
+with one `TRUNCATE`. The view admits history only before the first live
+reading, and at today's capacity of 150 — the room did not change size, and the
+140 cap posted in earlier years would make percentages incomparable across them.
+
+**Imported history is cleaned, never corrected.** It is the same sensor — over
+the days both cover, its counts match live readings to a median of two people —
+but five years of it include faults, and a stretch that cannot be trusted is
+left out rather than repaired:
+
+- Nothing before 2021-09-06. The gym ran under pandemic restrictions until
+  then; the weekly median daily peak went from 75 people to 153 in one week.
+- A count of 10 or more that stays exactly the same for an hour is a stalled
+  feed, not a crowd: 2,159 rows in 152 stretches, almost all a small leftover
+  held from late evening until the nightly reset.
+- A day with any count above 180 (120% of capacity), or with more than 20
+  people still counted at 00:30 after closing, drifted, and that error builds
+  over the day, so the whole day goes: 63 days, 44 and 19 respectively. The
+  ceiling sits well clear of real crowds — 2026-09-03 genuinely peaked at 157.
+
+That leaves 250,532 readings. Only the count column is used: the file's min and
+max columns contradict it in a fifth to a third of rows, and live readings from
+the same sensor side with the count.
 
 **Model and policy are separate**, because they fail for unrelated reasons. A
 correct forecast can still produce a useless suggestion: "the quietest hour is

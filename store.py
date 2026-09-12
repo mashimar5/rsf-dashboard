@@ -11,9 +11,11 @@ call would be wasteful and would eventually exhaust the server's limit.
 """
 
 import atexit
+import csv
 import os
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -78,6 +80,33 @@ CREATE TABLE IF NOT EXISTS google_tokens (
     refresh_token TEXT NOT NULL,
     linked_at     TIMESTAMPTZ NOT NULL
 );
+
+-- The sensor vendor's own ten-minute history, imported once and cleaned on
+-- the way in (tools/backfill_history.py). Kept apart from `readings` so the
+-- collector, the day view and the health checks only ever see live data;
+-- analytics opt in through the `occupancy` view.
+CREATE TABLE IF NOT EXISTS history (
+    observed_at TIMESTAMPTZ PRIMARY KEY,
+    count       INTEGER NOT NULL
+);
+
+-- One row per local date, expanded from data/academic_calendar.csv whenever
+-- the pool opens.
+CREATE TABLE IF NOT EXISTS calendar_days (
+    day   DATE PRIMARY KEY,
+    kind  TEXT NOT NULL,
+    label TEXT NOT NULL
+);
+
+-- What the curve, the backtest and the chat learn from. History only fills
+-- the time before live collection began, so the two never overlap, and it
+-- takes today's capacity: the room did not change size, and the cap posted
+-- in earlier years (140) would make percentages incomparable across them.
+CREATE OR REPLACE VIEW occupancy AS
+    SELECT observed_at, count, capacity FROM readings
+    UNION ALL
+    SELECT observed_at, count, 150 FROM history
+    WHERE observed_at < (SELECT COALESCE(MIN(observed_at), 'infinity') FROM readings);
 """
 
 _pool: ConnectionPool | None = None
@@ -87,11 +116,18 @@ def pool() -> ConnectionPool:
     """The process-wide connection pool, opened on first use."""
     global _pool
     if _pool is None:
-        _pool = ConnectionPool(
+        opened = ConnectionPool(
             database_url(), min_size=1, max_size=4, kwargs={"row_factory": dict_row}
         )
-        with _pool.connection() as connection:
-            connection.execute(SCHEMA)
+        try:
+            with opened.connection() as connection:
+                connection.execute(SCHEMA)
+                sync_calendar(connection)
+        except Exception:
+            # leave no half-initialised pool behind for the next call to reuse
+            opened.close()
+            raise
+        _pool = opened
     return _pool
 
 
@@ -166,8 +202,72 @@ def count_rows(conn) -> int:
     return conn.execute("SELECT COUNT(*) AS n FROM readings").fetchone()["n"]
 
 
+def occupancy_between(conn, start: datetime, end: datetime) -> list[Reading]:
+    """Live readings and imported history in [start, end), oldest first."""
+    rows = conn.execute(
+        "SELECT observed_at, count, capacity FROM occupancy"
+        " WHERE observed_at >= %s AND observed_at < %s ORDER BY observed_at",
+        (start, end),
+    ).fetchall()
+    return [_to_reading(row) for row in rows]
+
+
+CALENDAR_PATH = Path(__file__).resolve().parent / "data" / "academic_calendar.csv"
+
+# When periods overlap, the more specific one names the day: a holiday in term
+# is a holiday, and review week or finals are not instruction. An overlap
+# between two different kinds of equal rank can only be a transcription error.
+PERIOD_RANK = {"holiday": 3, "break": 2, "rrr": 2, "finals": 2,
+               "instruction": 1, "summer": 1}
+
+
+def calendar_days_from(path: Path = CALENDAR_PATH) -> dict[date, tuple[str, str]]:
+    """Expand the academic calendar's periods into one (kind, label) per day."""
+    days: dict[date, tuple[str, str]] = {}
+    with open(path, newline="") as handle:
+        for line, row in enumerate(csv.DictReader(handle), start=2):
+            kind, label = row["kind"], row["label"]
+            if kind not in PERIOD_RANK:
+                raise ValueError(f"{path.name} line {line}: unknown kind {kind!r}")
+            start, end = date.fromisoformat(row["start"]), date.fromisoformat(row["end"])
+            if end < start:
+                raise ValueError(f"{path.name} line {line}: ends before it starts")
+            day = start
+            while day <= end:
+                held = days.get(day)
+                if held is None or PERIOD_RANK[kind] > PERIOD_RANK[held[0]]:
+                    days[day] = (kind, label)
+                elif PERIOD_RANK[kind] == PERIOD_RANK[held[0]] and kind != held[0]:
+                    raise ValueError(
+                        f"{path.name} line {line}: {day} is both {held[0]} and {kind}")
+                day += timedelta(days=1)
+    return days
+
+
+def sync_calendar(conn, path: Path = CALENDAR_PATH) -> int:
+    """Replace calendar_days with the checked-in calendar.
+
+    Runs when the pool opens, so a calendar edit takes effect with the deploy
+    that ships it rather than needing a separate step someone could forget.
+    """
+    days = calendar_days_from(path)
+    conn.execute("DELETE FROM calendar_days")
+    with conn.cursor() as cursor:
+        with cursor.copy("COPY calendar_days (day, kind, label) FROM STDIN") as copy:
+            for day, (kind, label) in sorted(days.items()):
+                copy.write_row((day, kind, label))
+    return len(days)
+
+
+def period_of(conn, day: date) -> str | None:
+    """The kind of academic period a local date falls in, if the calendar knows."""
+    row = conn.execute("SELECT kind FROM calendar_days WHERE day = %s", (day,)).fetchone()
+    return row["kind"] if row else None
+
+
 def weekday_bands(conn, target: date, zone: str, bucket_minutes: int,
-                  window_instances: int, before: datetime | None = None):
+                  window_instances: int, before: datetime | None = None,
+                  match_period: bool = True):
     """The typical-weekday curve, computed in the database.
 
     This is the computation SQLite could not do. `AT TIME ZONE` is DST-aware,
@@ -178,33 +278,52 @@ def weekday_bands(conn, target: date, zone: str, bucket_minutes: int,
     every past Monday would be weighted equally forever, so the curve would
     degrade as data accumulated, blending quiet August with busy October.
 
+    Those days come from the same kind of academic period as the target when
+    the calendar knows it, so a Monday in term is compared with Mondays in
+    term rather than with the summer ones that happen to be most recent.
+    `match_period=False` restores plain recency, for backtesting the
+    difference; a target outside the calendar gets plain recency anyway.
+
+    Each day is averaged per bucket before the median is taken, so every
+    instance gets one vote however often it was sampled: live collection runs
+    every four minutes and imported history every ten.
+
     Returns (bands, instance_count, mean_spread) where bands maps a bucket
     index to {median, low, high}.
     """
     rows = conn.execute(
         """
-        WITH local AS (
+        WITH target AS (
+            SELECT kind FROM calendar_days
+            WHERE day = %(target)s AND %(match_period)s
+        ),
+        local AS (
             SELECT observed_at AT TIME ZONE %(zone)s AS local_at,
                    count::float / capacity           AS pct
-            FROM readings
+            FROM occupancy
             WHERE capacity > 0
               AND (%(before)s::timestamptz IS NULL OR observed_at < %(before)s)
         ),
+        -- one value per instance and bucket, whatever the sampling rate
         matching AS (
             SELECT local_at::date                            AS day,
                    (EXTRACT(HOUR FROM local_at) * 60
                     + EXTRACT(MINUTE FROM local_at))::int
                        / %(bucket)s                          AS bucket,
-                   pct
+                   AVG(pct)                                  AS pct
             FROM local
             WHERE EXTRACT(ISODOW FROM local_at) = %(isodow)s
               AND local_at::date <> %(target)s
+            GROUP BY 1, 2
         ),
         -- the window applies to days, not rows, so a day with patchy
         -- collection still counts as one instance
         recent AS (
-            SELECT day FROM matching
-            GROUP BY day ORDER BY day DESC LIMIT %(window)s
+            SELECT m.day FROM matching m
+            LEFT JOIN calendar_days c ON c.day = m.day
+            WHERE NOT EXISTS (SELECT 1 FROM target)
+               OR c.kind = (SELECT kind FROM target)
+            GROUP BY m.day ORDER BY m.day DESC LIMIT %(window)s
         )
         SELECT m.bucket,
                percentile_cont(0.5)  WITHIN GROUP (ORDER BY m.pct) AS median,
@@ -222,7 +341,7 @@ def weekday_bands(conn, target: date, zone: str, bucket_minutes: int,
         {
             "zone": zone, "bucket": bucket_minutes, "target": target,
             "isodow": target.isoweekday(), "window": window_instances,
-            "before": before,
+            "before": before, "match_period": match_period,
         },
     ).fetchall()
 
@@ -241,9 +360,6 @@ def weekday_bands(conn, target: date, zone: str, bucket_minutes: int,
     import evaluate   # imported lazily to avoid a cycle at import time
 
     return bands, rows[0]["instances"], evaluate.spread_of_bands(bands)
-
-
-
 
 
 def day_statistics(conn, start: datetime, end: datetime):

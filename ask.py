@@ -37,6 +37,13 @@ _recent: list[float] = []
 
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
+# Kinds of academic period, as labelled in data/academic_calendar.csv
+PERIODS = ("instruction", "rrr", "finals", "break", "summer", "holiday")
+
+
+def _today() -> date:
+    return datetime.now(LOCAL_TZ).date()
+
 
 def _local_midnight(day: date) -> datetime:
     return datetime(day.year, day.month, day.day, tzinfo=LOCAL_TZ)
@@ -47,52 +54,82 @@ def _parse_date(value: str) -> date:
 
 
 @beta_tool
-def data_overview() -> str:
+def data_overview(period: str = "current") -> str:
     """The whole picture: average occupancy for every weekday and hour.
 
     Call this first for any question about patterns, comparisons or what to
     expect. It returns the full grid, so you can reason over the shape of the
     week directly instead of querying slice by slice.
+
+    Args:
+        period: Which days the grid summarises. "current", the default, is the
+            kind of academic period today falls in, over the past year. One of
+            instruction, rrr, finals, break, summer or holiday is that kind over
+            the past year. "all" is every recorded day.
     """
+    if period not in ("current", "all", *PERIODS):
+        return json.dumps({"error": f"unknown period {period!r}",
+                           "periods": ["current", "all", *PERIODS]})
+    today = _today()
+    since = None if period == "all" else _local_midnight(today - timedelta(days=365))
+
     with store.connection() as conn:
+        today_is = store.period_of(conn, today)
+        kind = today_is if period == "current" else (None if period == "all" else period)
         grid = conn.execute(
             """WITH local AS (
                    SELECT observed_at AT TIME ZONE %(zone)s AS t,
                           count::float / capacity AS pct
-                   FROM readings WHERE capacity > 0
+                   FROM occupancy
+                   WHERE capacity > 0
+                     AND (%(since)s::timestamptz IS NULL OR observed_at >= %(since)s)
                )
-               SELECT EXTRACT(ISODOW FROM t)::int AS dow,
-                      EXTRACT(HOUR FROM t)::int AS hour,
-                      ROUND(AVG(pct)::numeric, 3) AS mean,
-                      ROUND(MAX(pct)::numeric, 3) AS peak,
-                      COUNT(DISTINCT t::date) AS days
-               FROM local GROUP BY 1, 2 ORDER BY 1, 2""",
-            {"zone": str(LOCAL_TZ)},
+               SELECT EXTRACT(ISODOW FROM l.t)::int AS dow,
+                      EXTRACT(HOUR FROM l.t)::int AS hour,
+                      ROUND(AVG(l.pct)::numeric, 3) AS mean,
+                      ROUND(MAX(l.pct)::numeric, 3) AS peak,
+                      COUNT(DISTINCT l.t::date) AS days
+               FROM local l
+               LEFT JOIN calendar_days c ON c.day = l.t::date
+               WHERE %(kind)s::text IS NULL OR c.kind = %(kind)s
+               GROUP BY 1, 2 ORDER BY 1, 2""",
+            {"zone": str(LOCAL_TZ), "since": since, "kind": kind},
         ).fetchall()
         days = conn.execute(
             """WITH local AS (
                    SELECT observed_at AT TIME ZONE %(zone)s AS t,
                           count::float / capacity AS pct
-                   FROM readings WHERE capacity > 0
+                   FROM occupancy
+                   WHERE capacity > 0 AND observed_at >= %(recent)s
                )
-               SELECT t::date AS day,
-                      ROUND(AVG(pct)::numeric, 3) AS mean,
-                      ROUND(MAX(pct)::numeric, 3) AS peak,
+               SELECT l.t::date AS day, c.kind,
+                      ROUND(AVG(l.pct)::numeric, 3) AS mean,
+                      ROUND(MAX(l.pct)::numeric, 3) AS peak,
                       COUNT(*) AS samples
-               FROM local GROUP BY 1 ORDER BY 1 DESC LIMIT 90""",
-            {"zone": str(LOCAL_TZ)},
+               FROM local l
+               LEFT JOIN calendar_days c ON c.day = l.t::date
+               GROUP BY 1, 2 ORDER BY 1 DESC LIMIT 90""",
+            {"zone": str(LOCAL_TZ), "recent": _local_midnight(today - timedelta(days=90))},
         ).fetchall()
 
     if not grid:
-        return json.dumps({"error": "no readings recorded yet"})
+        return json.dumps({"error": f"no readings recorded for period {kind}" if kind
+                           else "no readings recorded yet"})
     return json.dumps({
         "capacity": 150,
-        "today": datetime.now(LOCAL_TZ).date().isoformat(),
+        "today": today.isoformat(),
+        "today_is": today_is,
+        "grid_covers": {
+            "period": kind or "every kind",
+            "since": since.date().isoformat() if since else "the start of the record",
+        },
         "note": (
             "Occupancy is a fraction of capacity. The sensor counts entries minus"
-            " exits, so values above 1.0 are real. 'days' is how many distinct"
-            " days contributed to a cell -- treat a cell backed by one or two days"
-            " as weak evidence."
+            " exits, so values above 1.0 are real. Days before live collection"
+            " come from the sensor's own ten-minute history, with drifted days and"
+            " frozen stretches left out. 'days' is how many distinct days"
+            " contributed to a cell -- treat a cell backed by one or two days as"
+            " weak evidence."
         ),
         "weekday_hour_grid": {
             "columns": ["weekday", "hour", "mean", "peak", "days"],
@@ -103,9 +140,9 @@ def data_overview() -> str:
             ],
         },
         "by_day": {
-            "columns": ["date", "weekday", "mean", "peak", "samples"],
+            "columns": ["date", "weekday", "period", "mean", "peak", "samples"],
             "rows": [
-                [r["day"].isoformat(), WEEKDAYS[r["day"].weekday()],
+                [r["day"].isoformat(), WEEKDAYS[r["day"].weekday()], r["kind"],
                  float(r["mean"]), float(r["peak"]), r["samples"]]
                 for r in days
             ],
@@ -120,20 +157,32 @@ def data_range() -> str:
     Call this first when a question involves dates, so you do not ask about
     days that were never recorded.
     """
+    today = _today()
     with store.connection() as conn:
         row = conn.execute(
             """SELECT MIN(observed_at) AS first, MAX(observed_at) AS last,
-                      COUNT(*) AS readings FROM readings"""
+                      COUNT(*) AS readings,
+                      (SELECT MIN(observed_at) FROM readings) AS live_since
+               FROM occupancy"""
         ).fetchone()
+        today_is = store.period_of(conn, today)
     if not row or not row["first"]:
         return json.dumps({"error": "no readings recorded yet"})
     return json.dumps({
         "first_day": row["first"].astimezone(LOCAL_TZ).date().isoformat(),
         "last_day": row["last"].astimezone(LOCAL_TZ).date().isoformat(),
         "readings": row["readings"],
-        "today": datetime.now(LOCAL_TZ).date().isoformat(),
+        "live_collection_since": (
+            row["live_since"].astimezone(LOCAL_TZ).date().isoformat() if row["live_since"] else None
+        ),
+        "today": today.isoformat(),
+        "today_is": today_is,
         "capacity": 150,
-        "note": "Counts can exceed capacity; the sensor counts entries minus exits.",
+        "note": (
+            "Counts can exceed capacity; the sensor counts entries minus exits."
+            " Before live collection the record is the sensor's own ten-minute"
+            " history, with days it drifted and stretches where it froze left out."
+        ),
     })
 
 
@@ -182,7 +231,7 @@ def occupancy_stats(
             f"""WITH local AS (
                     SELECT observed_at AT TIME ZONE %(zone)s AS local_at,
                            count::float / capacity AS pct, count
-                    FROM readings
+                    FROM occupancy
                     WHERE observed_at >= %(start)s AND observed_at < %(end)s
                       AND capacity > 0
                 )
@@ -210,13 +259,16 @@ def occupancy_stats(
 def typical_weekday_curve(weekday: str) -> str:
     """The typical shape of one weekday: median occupancy per half hour.
 
+    Built from recent instances of that weekday in the same kind of academic
+    period as the next one -- a Monday in term from Mondays in term.
+
     Args:
         weekday: Weekday name, e.g. "Monday".
     """
     if weekday.capitalize() not in WEEKDAYS:
         return json.dumps({"error": f"unknown weekday {weekday!r}"})
 
-    today = datetime.now(LOCAL_TZ).date()
+    today = _today()
     ahead = (WEEKDAYS.index(weekday.capitalize()) - today.weekday()) % 7
     target = today + timedelta(days=ahead or 7)
 
@@ -224,13 +276,17 @@ def typical_weekday_curve(weekday: str) -> str:
         bands, instances, spread = store.weekday_bands(
             conn, target, str(LOCAL_TZ), BUCKET_MINUTES, WINDOW_INSTANCES
         )
+        period = store.period_of(conn, target)
     if instances < 3:
         return json.dumps({
             "instances": instances,
+            "period": period,
             "note": "fewer than three past instances, so there is no reliable curve yet",
         })
     return json.dumps({
         "weekday": weekday.capitalize(),
+        "date": target.isoformat(),
+        "period": period,
         "instances": instances,
         "mean_spread": round(spread, 3) if spread else None,
         "curve": [
@@ -341,11 +397,20 @@ forecast what to expect, in conversation.
 
 The data
 - Occupancy is a fraction of a 150-person capacity. A doorway sensor counts
-  entries minus exits every few minutes, so values above 1.0 are real.
-- Call data_overview first for almost anything. It gives you the entire
-  weekday-by-hour grid plus per-day summaries, so you can look for patterns
-  yourself rather than querying blindly. Use the narrower tools afterwards
-  when you need an exact figure for a specific slice.
+  entries minus exits, so values above 1.0 are real.
+- The record starts in September 2021. Until live collection began it is the
+  sensor's own ten-minute history; days the sensor drifted and stretches
+  where it froze were left out, not corrected.
+- The gym follows the academic calendar, so every day belongs to a period:
+  instruction, rrr (review week), finals, break, summer or holiday. Summer
+  and breaks run far quieter than term. Compare like with like -- a Monday
+  in term against Mondays in term.
+- Call data_overview first for almost anything. By default it summarises the
+  kind of period today falls in over the past year, as a weekday-by-hour grid
+  plus per-day summaries, so you can look for patterns yourself rather than
+  querying blindly. Ask it for another period, or all of them, when the
+  question is about one. Use the narrower tools afterwards when you need an
+  exact figure for a specific slice.
 
 How to answer
 - Two or three sentences. This is a panel on a dashboard, not a report.
@@ -355,7 +420,7 @@ How to answer
 - Quantify: "evenings peak near 85% between 4 and 7pm", not "evenings are
   busy". One or two figures carry an answer; five bury it.
 - When asked what to expect, put what it rests on in the same sentence:
-  "around 70%, from three Thursdays".
+  "around 70%, from eight Thursdays in term".
 - Sample size governs confidence. A cell backed by one or two days is weak
   evidence; say so in a clause rather than a paragraph. "Not enough data yet"
   is a complete answer when it is true.

@@ -45,6 +45,9 @@ export interface Typical {
   /** [minuteOfDay, median, low, high] — low/high are the range across past
    *  instances of this weekday, drawn as a band behind the median line. */
   points: [number, number, number, number][]
+  /** The kind of academic period the instances were drawn from, the same
+   *  kind as the day shown; null when the calendar does not cover the day. */
+  period: string | null
 }
 
 export interface SuggestedWindow {
