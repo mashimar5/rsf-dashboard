@@ -61,7 +61,9 @@ Backend pieces, each independent:
 - **Prediction** is a single SQL query (`store.weekday_bands`): a median per
   half-hour bucket across the last eight instances of that weekday in the same
   kind of academic period, plus the range. `evaluate.py` keeps the parts SQL
-  has no answer for — choosing a dispersion measure, scoring, backtesting.
+  has no answer for — choosing a dispersion measure, scoring, backtesting. A
+  random forest (`forest.py`) beats the curve by two points in backtesting but
+  is not served yet; see the notes below.
 - **Suggestion** (`policy.py`) turns that curve into recommendations, filtered
   by opening hours and — when signed in — by Google Calendar free/busy.
 
@@ -142,6 +144,11 @@ GitHub Actions runs the same suite on every push, plus a TypeScript typecheck,
 a frontend build, and a Docker build. The Python job installs from
 `requirements.txt` on a clean machine, which is what catches a dependency that
 works locally only because it was installed once and never declared.
+
+The forest's tests need `requirements-ml.txt` (numpy and scikit-learn) and skip
+without it. CI runs the main suite on `requirements.txt` alone first, then
+installs the modelling dependencies and runs `test_forest`, so the app is still
+proven to need nothing more.
 
 `tools/check_readme.py` also runs in CI and fails the build when this file
 documents a route, environment variable, or module the code does not have — or
@@ -274,6 +281,8 @@ for current occupancy.
 | `tools/make_icons.py` | Regenerates the home-screen icon. Needs Pillow, which is deliberately not a runtime dependency. |
 | `tools/backfill_history.py` | The one-time import of sensor history, and the rules that decide what to keep. |
 | `tools/backtest_curve.py` | Scores the curve against history it never saw, with and without period matching. |
+| `forest.py` | A random forest forecast: day-ahead features, monthly walk-forward retraining, and the comparison with the curve. Offline only. |
+| `tools/backtest_forest.py` | Scores the forest against the curve on the same days; `--dev` runs the 2022 check. |
 | `data/academic_calendar.csv` | Berkeley's academic periods and holidays, from the Registrar's calendars. |
 
 The Docker build is multi-stage: Node builds the frontend, then the Python image
@@ -377,6 +386,45 @@ left out rather than repaired:
 That leaves 250,532 readings. Only the count column is used: the file's min and
 max columns contradict it in a fifth to a third of rows, and live readings from
 the same sensor side with the count.
+
+**A random forest beats the curve on the curve's own test.** `forest.py`
+forecasts each hour a day ahead from where the day sits in the academic year,
+the same hour yesterday and over the past week, and the curve itself. It is
+retrained at the start of each month on everything before it, and scored on the
+same 1,304 days, hours and hourly means as the curve, with the same
+four-reading minimum and three-instance gate. Its settings were fixed before
+the test years were scored; the second half of 2022 checked them, and they were
+kept rather than tuned on so little data.
+
+| Period | Days | Curve | Forest | Forest better on |
+| --- | --- | --- | --- | --- |
+| Term | 700 | 7.6 pts | 5.7 pts | 68% of days |
+| Summer | 372 | 4.5 | 3.1 | 80% |
+| Breaks | 107 | 5.3 | 3.2 | 87% |
+| Review week | 48 | 7.4 | 4.6 | 88% |
+| Holidays | 42 | 14.2 | 6.2 | 86% |
+| Finals | 35 | 6.8 | 4.3 | 89% |
+| **All** | **1,304** | **6.7** | **4.7** | **75%** |
+
+The two-point improvement has a 95% interval of 1.6 to 2.5 points, from
+resampling whole weeks rather than single days, because neighbouring days are
+not independent evidence. The forest also removes the curve's bias, from +1.1
+points overall (+2.0 in term) to +0.1.
+
+What it leans on explains the gain. Over the most recent six months, shuffling
+the curve's median raises the error by 9.7 points, and shuffling the same hour
+yesterday, a week ago or across the past week raises it by 2.2 to 2.6 points
+each; nothing else passes 1. The forest is the curve, corrected by how the last
+few days actually went, which is what an eight-week median is slowest to
+notice. With under a year to learn from, the same model gained only 0.5 points
+on the 2022 check, too little to tell from noise.
+
+**The dashboard still draws the curve.** The forest needs yesterday's readings,
+so it has to run every night, and scikit-learn will not fit beside the collector
+on a 256 MB machine; `requirements-ml.txt` keeps it apart from the app's
+dependencies. Serving the forest means a nightly job somewhere with memory,
+writing forecasts to a table the app reads and falling back to the curve when
+one is missing.
 
 **Model and policy are separate**, because they fail for unrelated reasons. A
 correct forecast can still produce a useless suggestion: "the quietest hour is

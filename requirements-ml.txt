@@ -1,0 +1,6 @@
+# Offline modelling only: forest.py and tools/backtest_forest.py. The running
+# app never imports these, and the Docker image never installs them -- the
+# production machine has 256 MB, and scikit-learn would take a large share.
+-r requirements.txt
+numpy==2.5.3
+scikit-learn==1.9.1

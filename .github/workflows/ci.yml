@@ -53,6 +53,16 @@ jobs:
       - name: Check the README against the code
         run: python tools/check_readme.py
 
+      # The forest and its backtest need numpy and scikit-learn, which the app
+      # never imports and the Docker image never installs. They go in after
+      # the main suite, so that suite still proves requirements.txt is enough
+      # for the app on its own.
+      - name: Install modelling dependencies
+        run: pip install -r requirements-ml.txt
+
+      - name: Run model tests
+        run: python -m unittest test_forest --verbose
+
   frontend:
     name: TypeScript build
     runs-on: ubuntu-latest
