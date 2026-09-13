@@ -154,6 +154,16 @@ def band_points(bands):
     ]
 
 
+def with_forecast(bands, by_hour):
+    """The curve's bands with each half hour's median replaced by the forest's
+    forecast for that hour. Only the line moves: the spread across past
+    instances stays the curve's, because the forest has no band of its own."""
+    return {
+        slot: {**band, "median": by_hour[(slot * BUCKET_MINUTES) // 60]}
+        for slot, band in bands.items()
+    }
+
+
 def chart_points(readings, midnight):
     """Readings -> an SVG polyline, x by time of day, y by percent full"""
     points = []
@@ -759,6 +769,14 @@ def day_view(connection, viewed, today, earliest_day):
     bands, weeks, spread = store.weekday_bands(
         connection, viewed, str(LOCAL_TZ), BUCKET_MINUTES, evaluate.WINDOW_INSTANCES
     )
+    # Today's line is the random forest's when the forecast job has stored one,
+    # since it beat the curve by two points in backtesting. The band stays the
+    # curve's spread, and with no forecast -- the job failed or has not run
+    # yet -- the line and the suggestions fall back to the curve.
+    forecast = (store.forecast_for(connection, viewed)
+                if is_today and weeks >= MIN_WEEKDAY_INSTANCES else None)
+    if forecast:
+        bands = with_forecast(bands, forecast["by_hour"])
     typical = None
     if weeks >= MIN_WEEKDAY_INSTANCES:
         typical = {
@@ -769,6 +787,7 @@ def day_view(connection, viewed, today, earliest_day):
             # what the instances were drawn from, so a curve built from last
             # spring does not pass itself off as simply "8 past Mondays"
             "period": store.period_of(connection, viewed),
+            "source": "forest" if forecast else "curve",
         }
 
     # Suggestions are for today only: "when should I go" is not a question
@@ -802,6 +821,7 @@ def day_view(connection, viewed, today, earliest_day):
             store.log_prediction(
                 connection, viewed, window.start, window.end,
                 window.predicted_pct, weeks, window.spread, window.section,
+                model="forest" if forecast else "curve",
             )
             windows.append({
                 "start": window.start.isoformat(),

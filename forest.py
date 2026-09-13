@@ -11,6 +11,8 @@ be flattering:
 
 - Forecasts are day-ahead. Every feature for a day comes from before that
   day, including the curve itself, which the forest is given as a feature.
+  The curve is recomputed in memory by the dashboard query's own rules, and a
+  test holds the two equal.
 - The forest is retrained each month on everything before that month, as it
   would run for real, and never sees the month it is scored on.
 - Both are scored on the same hours of the same days, against the same hourly
@@ -26,9 +28,11 @@ imports this module, and the production machine has no memory to spare.
 """
 
 import csv
+import math
+from bisect import bisect_left
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from statistics import mean
 from zoneinfo import ZoneInfo
 
@@ -173,19 +177,70 @@ def recent_features(hourly, day: date, hour: int) -> list[float]:
     ]
 
 
+def calendar_kinds(conn) -> dict[date, str]:
+    """The labels store.weekday_bands matches on: calendar_days, synced from the CSV."""
+    return {row["day"]: row["kind"] for row in conn.execute("SELECT day, kind FROM calendar_days")}
+
+
+def weekday_index(hourly) -> dict[int, list[date]]:
+    """Days with any reading, by ISO weekday, oldest first."""
+    index = defaultdict(list)
+    for day in sorted({day for day, _ in hourly}):
+        index[day.isoweekday()].append(day)
+    return index
+
+
+def percentile_cont(values: list[float], fraction: float) -> float:
+    """Postgres's percentile_cont: linear interpolation between the nearest ranks."""
+    ordered = sorted(values)
+    position = fraction * (len(ordered) - 1)
+    lower, upper = math.floor(position), math.ceil(position)
+    return ordered[lower] + (position - lower) * (ordered[upper] - ordered[lower])
+
+
+def curve_bands(hourly, kinds, index, day: date, window: int = evaluate.WINDOW_INSTANCES):
+    """store.weekday_bands for `day` as of the night before, in hourly buckets.
+
+    Computed from hourly means already in memory, because one query per day
+    took six and a half minutes from the production machine. The rules are the
+    query's, and a test holds the two equal: same-weekday days before `day`
+    that have any reading, restricted to `day`'s kind of period when the
+    calendar knows it, the most recent `window` of them, and for each hour the
+    percentile_cont quartiles, the range and the count across those days.
+    """
+    target_kind = kinds.get(day)
+    candidates = index.get(day.isoweekday(), [])
+    recent = []
+    for earlier in reversed(candidates[:bisect_left(candidates, day)]):
+        if target_kind is None or kinds.get(earlier) == target_kind:
+            recent.append(earlier)
+            if len(recent) == window:
+                break
+    bands = {}
+    for hour in range(24):
+        values = [hourly[(each, hour)][0] for each in recent if (each, hour) in hourly]
+        if values:
+            bands[hour] = {
+                "median": percentile_cont(values, 0.5),
+                "q1": percentile_cont(values, 0.25),
+                "q3": percentile_cont(values, 0.75),
+                "low": min(values), "high": max(values), "n": len(values),
+            }
+    return bands, len(recent)
+
+
 def build_rows(conn, start: date, end: date) -> list[Row]:
     """Every hour of every day in [start, end], with its day-ahead features."""
     hourly = hourly_occupancy(conn)
-    kinds = store.calendar_days_from()
+    kinds = calendar_kinds(conn)
+    index = weekday_index(hourly)
     periods = calendar_periods()
     rows = []
     day = start
     while day <= end:
-        midnight = datetime(day.year, day.month, day.day, tzinfo=LOCAL_TZ)
         # the dashboard's own curve, exactly as it stood the night before
-        bands, weeks, _ = store.weekday_bands(conn, day, str(LOCAL_TZ), BUCKET_MINUTES,
-                                              evaluate.WINDOW_INSTANCES, before=midnight)
-        kind = kinds.get(day, (None, None))[0]
+        bands, weeks = curve_bands(hourly, kinds, index, day)
+        kind = kinds.get(day)
         calendar = calendar_features(day, kind, periods)
         for hour in range(24):
             band = bands.get(hour)
@@ -298,3 +353,23 @@ def weekly_bootstrap(days: list[DayScore], resamples: int = 2000, seed: int = 0)
         means.append(sum(sample) / len(sample))
     low, high = np.percentile(means, [2.5, 97.5])
     return float(low), float(high)
+
+
+def forecast_day(conn, day: date, model_factory=default_model) -> dict[int, float] | None:
+    """The forest's forecast for every hour of `day`, trained on every hour before it.
+
+    None when the dashboard would show no curve for the day -- fewer than
+    MIN_INSTANCES comparable days -- because the forest is judged as an
+    improvement on the curve and has nothing to improve on there.
+    """
+    import numpy as np
+
+    rows = build_rows(conn, FIRST_DAY, day)
+    target = [r for r in rows if r.day == day]
+    train = [r for r in rows if r.day < day and r.actual is not None and r.curve is not None]
+    if not target or target[0].weeks < MIN_INSTANCES or not train:
+        return None
+    model = model_factory()
+    model.fit(np.array([r.features for r in train]), np.array([r.actual for r in train]))
+    predicted = model.predict(np.array([r.features for r in target]))
+    return {r.hour: float(p) for r, p in zip(target, predicted)}

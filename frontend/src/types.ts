@@ -48,6 +48,10 @@ export interface Typical {
   /** The kind of academic period the instances were drawn from, the same
    *  kind as the day shown; null when the calendar does not cover the day. */
   period: string | null
+  /** Whose line this is: the random forest's forecast, when the nightly job
+   *  has stored one for today, or the typical-weekday curve. The band is the
+   *  curve's spread across past instances either way. */
+  source: 'forest' | 'curve'
 }
 
 export interface SuggestedWindow {

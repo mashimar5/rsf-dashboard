@@ -1,0 +1,18 @@
+# The forecast job, tools/forecast_today.py, run hourly by a scheduled Fly
+# machine with 1 GB of memory. It is kept apart from the app's image because
+# the app never imports numpy or scikit-learn and its 256 MB machine has no
+# room for them.
+#
+# `fly deploy` ignores this machine. After changing forest.py, store.py or the
+# calendar, rebuild it:
+#   fly machine update <forecast machine id> --dockerfile Dockerfile.forecast
+FROM python:3.13-slim
+
+WORKDIR /app
+
+COPY requirements.txt requirements-ml.txt ./
+RUN pip install --no-cache-dir -r requirements-ml.txt
+
+COPY . .
+
+CMD ["python", "tools/forecast_today.py"]

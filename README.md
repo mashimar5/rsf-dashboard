@@ -26,6 +26,7 @@ Sensor history (CSV) ──> one-time import ───┤
                                             ├──> Flask ──> React dashboard
 RecWell hours page ──> scraper ──> cache ───┤
 Registrar calendars ──> calendar CSV ───────┤
+Forecast machine (hourly) ──> forecasts ────┤
                                             │
 Google Calendar (free/busy) ────────────────┘
 ```
@@ -62,8 +63,8 @@ Backend pieces, each independent:
   half-hour bucket across the last eight instances of that weekday in the same
   kind of academic period, plus the range. `evaluate.py` keeps the parts SQL
   has no answer for — choosing a dispersion measure, scoring, backtesting. A
-  random forest (`forest.py`) beats the curve by two points in backtesting but
-  is not served yet; see the notes below.
+  random forest (`forest.py`) beats the curve by two points in backtesting, and
+  draws today's line whenever its forecast is stored; see the notes below.
 - **Suggestion** (`policy.py`) turns that curve into recommendations, filtered
   by opening hours and — when signed in — by Google Calendar free/busy.
 
@@ -222,6 +223,20 @@ fly ssh console -C "python tools/backfill_history.py --cleaned /tmp/history-clea
 A bad row anywhere in the file aborts the whole load, and `TRUNCATE history`
 undoes it without touching a single live reading.
 
+The forecast job runs on its own scheduled machine, built from
+`Dockerfile.forecast` with 1 GB of memory:
+
+```bash
+fly machine run . --dockerfile Dockerfile.forecast --schedule hourly --vm-memory 1024 --restart no --name forecast
+```
+
+`fly deploy` ignores that machine, because Fly treats machines created with
+`fly machine run` as unmanaged. After changing `forest.py`, `store.py` or the
+calendar, rebuild it with
+`fly machine update <forecast machine id> --dockerfile Dockerfile.forecast`
+(`fly machine list` shows the id). The app's secrets reach it like any other
+machine in the app, so `DATABASE_URL` still never leaves Fly.
+
 ```bash
 fly deploy
 ```
@@ -283,6 +298,7 @@ for current occupancy.
 | `tools/backtest_curve.py` | Scores the curve against history it never saw, with and without period matching. |
 | `forest.py` | A random forest forecast: day-ahead features, monthly walk-forward retraining, and the comparison with the curve. Offline only. |
 | `tools/backtest_forest.py` | Scores the forest against the curve on the same days; `--dev` runs the 2022 check. |
+| `tools/forecast_today.py` | The scheduled job: forecasts today with the forest and stores it for the dashboard. |
 | `data/academic_calendar.csv` | Berkeley's academic periods and holidays, from the Registrar's calendars. |
 
 The Docker build is multi-stage: Node builds the frontend, then the Python image
@@ -419,12 +435,28 @@ few days actually went, which is what an eight-week median is slowest to
 notice. With under a year to learn from, the same model gained only 0.5 points
 on the 2022 check, too little to tell from noise.
 
-**The dashboard still draws the curve.** The forest needs yesterday's readings,
-so it has to run every night, and scikit-learn will not fit beside the collector
-on a 256 MB machine; `requirements-ml.txt` keeps it apart from the app's
-dependencies. Serving the forest means a nightly job somewhere with memory,
-writing forecasts to a table the app reads and falling back to the curve when
-one is missing.
+**Today's line and suggestions come from the forest.** A scheduled machine runs
+`tools/forecast_today.py` every hour. The first run after midnight trains the
+forest on every hour before today, forecasts all 24 hours and stores them;
+later runs find the forecast already there and exit before importing
+scikit-learn. Fly's schedules are fuzzy, so hourly is what gets a forecast in
+shortly after midnight, and a failed run is simply retried an hour later.
+
+The dashboard replaces the curve's median with the forecast and ranks
+suggestions on it, but keeps the curve's band, because the forest has no spread
+of its own. Each logged suggestion records which model produced it, so the
+forest and the curve are scored separately on what was actually shown. With no
+complete forecast — the job failed, or has not run yet — the line and the
+suggestions fall back to the curve, and the legend says "Typical" instead of
+"Forecast".
+
+It is a separate machine because the forest will not fit beside the collector:
+a run peaks around 400 MB on a server with 256 MB, and the model is 155 MB when
+saved. The job retrains on every run instead of keeping a model anywhere. The
+backtest retrained monthly, so daily retraining only gives it more to learn
+from. Rebuilding five years of features takes about a second, because the curve
+is recomputed in memory by the dashboard query's own rules, and a test holds the
+two equal: one query per day took six and a half minutes from Fly.
 
 **Model and policy are separate**, because they fail for unrelated reasons. A
 correct forecast can still produce a useless suggestion: "the quietest hour is

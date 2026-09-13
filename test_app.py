@@ -142,7 +142,7 @@ class ProxyAwarenessTest(unittest.TestCase):
 class DayApiTest(unittest.TestCase):
     """/api/day is the contract the React client renders from."""
 
-    def _fetch(self, weeks, today_samples=5):
+    def _fetch(self, weeks, today_samples=5, forecast=None):
         """Render /api/day with a stubbed curve.
 
         weekday_bands is a single query now, so stubbing it is both simpler
@@ -157,6 +157,7 @@ class DayApiTest(unittest.TestCase):
         } if weeks else {}
         with patch("store.between", return_value=today), \
              patch("store.weekday_bands", return_value=(bands, weeks, 0.2)), \
+             patch("store.forecast_for", return_value=forecast), \
              patch("store.earliest", return_value=reading(midnight - timedelta(days=30), 0)), \
              patch("app.fetch_reading", return_value=reading(now, 100)):
             return app.app.test_client().get("/api/day").get_json()
@@ -178,6 +179,41 @@ class DayApiTest(unittest.TestCase):
             typical = self._fetch(weeks=3)["typical"]
 
         self.assertEqual(typical["period"], "instruction")
+
+    def test_todays_line_is_the_forest_forecast_when_one_is_stored(self):
+        forecast = {"by_hour": {hour: hour / 100 for hour in range(24)}, "model": "forest",
+                    "made_at": datetime.now(TZ)}
+        typical = self._fetch(weeks=3, forecast=forecast)["typical"]
+        line = {point[0]: point[1] for point in typical["points"]}
+
+        self.assertEqual(typical["source"], "forest")
+        self.assertEqual((line[8 * 60 + 15], line[8 * 60 + 45], line[9 * 60 + 15]), (0.08, 0.08, 0.09),
+                         "each half hour takes its hour's forecast")
+        self.assertEqual({(point[2], point[3]) for point in typical["points"]}, {(0.3, 0.5)},
+                         "the band is still the curve's")
+
+    def test_without_a_forecast_the_curve_is_drawn(self):
+        self.assertEqual(self._fetch(weeks=3)["typical"]["source"], "curve")
+
+    def test_suggestions_rank_on_the_forecast_and_are_logged_as_the_forests(self):
+        from types import SimpleNamespace
+        forecast = {"by_hour": {hour: 0.25 for hour in range(24)}, "model": "forest",
+                    "made_at": datetime.now(TZ)}
+        start = datetime.now(TZ) + timedelta(hours=1)
+        suggested = SimpleNamespace(refusal=None, windows=[SimpleNamespace(
+            start=start, end=start + timedelta(hours=1), predicted_pct=0.25, spread=0.05, section="Evening")])
+        seen, logged = {}, []
+
+        def policy_spy(bands, *args, **kwargs):
+            seen["medians"] = {band["median"] for band in bands.values()}
+            return suggested
+
+        with patch("policy.suggest_by_section", side_effect=policy_spy), \
+             patch("store.log_prediction", side_effect=lambda *a, **k: logged.append(k.get("model")) or 1):
+            self._fetch(weeks=3, forecast=forecast)
+
+        self.assertEqual(seen["medians"], {0.25}, "suggestions are ranked on the forecast")
+        self.assertEqual(logged, ["forest"])
 
     def test_typical_does_not_depend_on_today_having_data(self):
         """Just after midnight the typical curve is the only thing worth drawing"""

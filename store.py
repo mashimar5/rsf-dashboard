@@ -107,6 +107,23 @@ CREATE OR REPLACE VIEW occupancy AS
     UNION ALL
     SELECT observed_at, count, 150 FROM history
     WHERE observed_at < (SELECT COALESCE(MIN(observed_at), 'infinity') FROM readings);
+
+-- The random forest's forecast for a day, one row per local hour, written by
+-- tools/forecast_today.py on a scheduled machine. The dashboard draws and
+-- suggests from it when every hour is there, and from the curve when not.
+CREATE TABLE IF NOT EXISTS forecasts (
+    for_date DATE NOT NULL,
+    hour     SMALLINT NOT NULL CHECK (hour BETWEEN 0 AND 23),
+    pct      DOUBLE PRECISION NOT NULL,
+    model    TEXT NOT NULL,
+    made_at  TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (for_date, hour)
+);
+
+-- Which forecast a logged suggestion came from, so the forest and the curve
+-- are each scored on what was actually shown. CREATE TABLE IF NOT EXISTS does
+-- nothing to a table that already exists, hence the explicit ALTER.
+ALTER TABLE predictions ADD COLUMN IF NOT EXISTS model TEXT;
 """
 
 _pool: ConnectionPool | None = None
@@ -265,6 +282,36 @@ def period_of(conn, day: date) -> str | None:
     return row["kind"] if row else None
 
 
+def save_forecast(conn, for_date: date, by_hour: dict[int, float], model: str) -> None:
+    """Replace a day's forecast. All 24 hours or nothing: a partial forecast
+    would leave the dashboard drawing half a line."""
+    if sorted(by_hour) != list(range(24)):
+        raise ValueError(f"a forecast needs all 24 hours, got {len(by_hour)}")
+    conn.execute("DELETE FROM forecasts WHERE for_date = %s", (for_date,))
+    with conn.cursor() as cursor:
+        cursor.executemany(
+            "INSERT INTO forecasts (for_date, hour, pct, model, made_at)"
+            " VALUES (%s, %s, %s, %s, NOW())",
+            [(for_date, hour, float(pct), model) for hour, pct in sorted(by_hour.items())],
+        )
+    conn.commit()
+
+
+def forecast_for(conn, for_date: date) -> dict | None:
+    """A day's stored forecast, or None unless every hour is there."""
+    rows = conn.execute(
+        "SELECT hour, pct, model, made_at FROM forecasts WHERE for_date = %s ORDER BY hour",
+        (for_date,),
+    ).fetchall()
+    if len(rows) != 24:
+        return None
+    return {
+        "by_hour": {row["hour"]: row["pct"] for row in rows},
+        "model": rows[0]["model"],
+        "made_at": max(row["made_at"] for row in rows),
+    }
+
+
 def weekday_bands(conn, target: date, zone: str, bucket_minutes: int,
                   window_instances: int, before: datetime | None = None,
                   match_period: bool = True):
@@ -391,23 +438,25 @@ def day_statistics(conn, start: datetime, end: datetime):
 
 def log_prediction(conn, for_date: date, window_start: datetime, window_end: datetime,
                    predicted_pct: float, basis_weeks: int,
-                   basis_spread: float | None = None, section: str | None = None) -> int:
+                   basis_spread: float | None = None, section: str | None = None,
+                   model: str | None = None) -> int:
     """Record a window as shown, once. Returns the row id either way.
 
     predicted_pct is what the user actually saw, not something to recompute
     later -- the model will change, and recomputing would score today's model
-    against decisions it never made.
+    against decisions it never made. `model` says which forecast produced it,
+    the forest or the curve.
     """
     row = conn.execute(
         """INSERT INTO predictions
            (made_at, for_date, window_start, window_end, predicted_pct,
-            basis_weeks, basis_spread, section)
-           VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s)
+            basis_weeks, basis_spread, section, model)
+           VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (for_date, window_start) DO UPDATE
                SET for_date = EXCLUDED.for_date
            RETURNING id""",
         (for_date, window_start, window_end, predicted_pct,
-         basis_weeks, basis_spread, section),
+         basis_weeks, basis_spread, section, model),
     ).fetchone()
     conn.commit()
     return row["id"]

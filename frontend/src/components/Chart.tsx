@@ -170,7 +170,9 @@ export function Chart({ day }: { day: DayView }) {
         {day.typical && (
           <span>
             <i className="typical" />
-            Typical {day.typical.weekday}{PERIOD_PHRASES[day.typical.period ?? ''] ?? ''} · {day.typical.weeks} weeks
+            {day.typical.source === 'forest'
+              ? `Forecast · random forest · band from ${day.typical.weeks} ${day.typical.weekday}s${PERIOD_PHRASES[day.typical.period ?? ''] ?? ''}`
+              : `Typical ${day.typical.weekday}${PERIOD_PHRASES[day.typical.period ?? ''] ?? ''} · ${day.typical.weeks} weeks`}
             {day.typical.spread != null &&
               ` · ±${Math.round(day.typical.spread * 50)}pt spread`}
           </span>
