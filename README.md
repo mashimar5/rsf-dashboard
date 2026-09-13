@@ -171,7 +171,7 @@ omits one it does. Only structural claims can be checked that way; prose like
 | `/api/preferences` | `DELETE` clears scheduling preferences. |
 | `/auth/google`, `/auth/callback`, `/auth/logout` | Google sign-in. |
 | `/health` | Liveness. Returns 503 only for conditions a restart could fix; Fly's health check watches this. |
-| `/health/freshness` | Returns 503 when readings have stopped. For an external uptime monitor, which pages a human rather than restarting. |
+| `/health/freshness` | Returns 503 when readings have stopped, or the count has frozen. For an external uptime monitor, which pages a human rather than restarting. |
 | `/privacy` | Privacy policy. |
 
 ## Configuration
@@ -263,6 +263,7 @@ a one-time import, not a way to fill tomorrow's gaps.
 | --- | --- | --- | --- |
 | Liveness | `/health` | Fly health check, every 60s | Restart the machine |
 | Freshness | `/health/freshness` | UptimeRobot, every 5 min | Email a human |
+| Frozen count | `/health/freshness` | The same monitor | Email a human |
 
 The split is deliberate. `/health` returns 503 only for conditions a restart
 could plausibly fix — the database unreachable, or the collector thread dead
@@ -273,8 +274,34 @@ restarts on, because the right response is to tell someone.
 
 Threshold is 15 minutes — three missed cycles at the deployed interval, which
 absorbs a transient API failure without crying wolf. The dashboard also says
-plainly when readings have stopped, so the headline number is never mistaken
-for current occupancy.
+plainly when readings have stopped, so the headline number is not mistaken for
+current occupancy. It says nothing yet when the count is frozen; only the
+monitor does.
+
+**A frozen count fails freshness too.** The API returns no measurement time, so
+a reading's timestamp proves only that the poll ran. A stalled sensor keeps
+answering on time with the same number, and a check on age alone stays green
+while the number is wrong. That is the commonest fault in the sensor's history:
+the same count of 10 or more for an hour or longer, usually from late evening
+until the nightly reset at 09:00 UTC, on 151 of about 1,800 days. The import
+drops those stretches for the same reason. On the live feed, a count of at
+least 10 unchanged for 60 minutes returns 503, with a reason such as
+`count frozen at 12 for 90 minutes`.
+
+It shares the endpoint because it asks the same question — is the headline
+number the room now? — and has the same answer: a restart cannot unstick a
+sensor, so tell someone. The monitor already watching freshness catches it with
+nothing new to set up. The cost is that the alert email cannot say which of the
+two failed; the response's `reason` can. If the live feed freezes as often as
+the history did, expect that email about one day in twelve, usually overnight,
+clearing at the reset.
+
+The hour is measured between readings, not up to now, so a feed that stops
+reads as stale rather than frozen. Polling every four minutes, an hour is
+sixteen identical readings — a stricter test than the import's six ten-minute
+rows — and the floor of 10 is what lets an empty gym read 0 all night. In the
+first nine days of live collection, no count of 10 or more held for longer than
+ten minutes.
 
 ## Layout
 

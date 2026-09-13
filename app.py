@@ -206,6 +206,12 @@ def start_collector(interval_seconds: int) -> None:
 # crying wolf.
 STALE_AFTER_SECONDS = 15 * 60
 
+# A count of at least this many, unchanged for this long, is a stalled sensor
+# rather than a crowd; the history import drops such stretches by the same
+# rule. The floor is there because an empty gym legitimately reads 0 all night.
+FROZEN_MIN_COUNT = 10
+FROZEN_AFTER_SECONDS = 60 * 60
+
 # Unset locally, so `python app.py` does not collect; cron/collect.py owns that
 COLLECT_INTERVAL = int(os.environ.get("COLLECT_INTERVAL", "0"))
 if COLLECT_INTERVAL:
@@ -633,34 +639,67 @@ def health():
     return jsonify(report), (503 if restartable else 200)
 
 
+def _now() -> datetime:
+    """The current instant, behind a function so tests can fix the clock."""
+    return datetime.now(timezone.utc)
+
+
 @app.route("/health/freshness")
 def freshness():
-    """Fails when readings have stopped arriving.
+    """Fails when readings have stopped arriving, or the count has frozen.
 
     Separate from /health on purpose. Fly's health check watches /health and
     restarts on failure, so staleness must not fail that -- a dead sensor API
     is not fixed by restarting. This endpoint is for an external monitor,
     which should page a human instead. Any uptime service can watch it; no
     JSON keyword matching required.
+
+    A frozen count is staleness the timestamps cannot show. The API reports no
+    measurement time, so readings are stamped when fetched, and a stalled
+    sensor keeps answering on time with the same number. The hour is measured
+    between readings, not up to now: readings that stop are already stale, and
+    silence is no evidence that the count held.
     """
     try:
-        row = db().execute("SELECT MAX(observed_at) AS newest FROM readings").fetchone()
+        row = db().execute(
+            """SELECT latest.observed_at AS newest, latest.count,
+                      -- the first reading since the count last changed
+                      (SELECT MIN(observed_at) FROM readings
+                       WHERE observed_at > COALESCE(
+                           (SELECT MAX(observed_at) FROM readings
+                            WHERE count <> latest.count),
+                           '-infinity')) AS unchanged_since
+               FROM (SELECT observed_at, count FROM readings
+                     ORDER BY observed_at DESC LIMIT 1) AS latest"""
+        ).fetchone()
     except Exception as error:
         return jsonify({"fresh": False, "reason": f"database unreachable: {error}"}), 503
 
-    if not row["newest"]:
+    if not row:
         return jsonify({"fresh": False, "reason": "no readings recorded"}), 503
 
-    age = (datetime.now(timezone.utc) - row["newest"]).total_seconds()
-    fresh = age <= STALE_AFTER_SECONDS
+    age = (_now() - row["newest"]).total_seconds()
+    held = (row["newest"] - row["unchanged_since"]).total_seconds()
+    stale = age > STALE_AFTER_SECONDS
+    frozen = row["count"] >= FROZEN_MIN_COUNT and held >= FROZEN_AFTER_SECONDS
+    fresh = not stale and not frozen
     body = {
         "fresh": fresh,
+        "stale": stale,
+        "frozen": frozen,
         "ageSeconds": round(age),
         "thresholdSeconds": STALE_AFTER_SECONDS,
         "lastReadingAt": row["newest"].astimezone(LOCAL_TZ).isoformat(),
+        "count": row["count"],
+        "unchangedSince": row["unchanged_since"].astimezone(LOCAL_TZ).isoformat(),
     }
-    if not fresh:
-        body["reason"] = f"no reading for {round(age / 60)} minutes"
+    reasons = []
+    if stale:
+        reasons.append(f"no reading for {round(age / 60)} minutes")
+    if frozen:
+        reasons.append(f"count frozen at {row['count']} for {round(held / 60)} minutes")
+    if reasons:
+        body["reason"] = "; ".join(reasons)
     return jsonify(body), (200 if fresh else 503)
 
 
