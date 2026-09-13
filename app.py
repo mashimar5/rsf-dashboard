@@ -211,6 +211,10 @@ STALE_AFTER_SECONDS = 15 * 60
 # rule. The floor is there because an empty gym legitimately reads 0 all night.
 FROZEN_MIN_COUNT = 10
 FROZEN_AFTER_SECONDS = 60 * 60
+# The forecast job runs hourly on a fuzzy schedule, so its first run after
+# midnight lands at no set time. By 03:00 a failed first attempt has had its
+# retry too.
+FORECAST_DUE_HOUR = 3
 
 # Unset locally, so `python app.py` does not collect; cron/collect.py owns that
 COLLECT_INTERVAL = int(os.environ.get("COLLECT_INTERVAL", "0"))
@@ -644,9 +648,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def forecast_state(connection, now: datetime) -> str:
+    """Where today's forest forecast stands: "stored", "not due", "not expected"
+    or "missing".
+
+    Only "missing" is a failure. Today is Berkeley's date, not UTC's. Before
+    FORECAST_DUE_HOUR the job may simply not have run yet; with fewer than
+    MIN_WEEKDAY_INSTANCES comparable days the dashboard draws no curve and the
+    job stores nothing, by design.
+    """
+    local = now.astimezone(LOCAL_TZ)
+    today = local.date()
+    if store.forecast_for(connection, today):
+        return "stored"
+    if local.hour < FORECAST_DUE_HOUR:
+        return "not due"
+    _, weeks, _ = store.weekday_bands(connection, today, str(LOCAL_TZ), BUCKET_MINUTES,
+                                      evaluate.WINDOW_INSTANCES)
+    return "missing" if weeks >= MIN_WEEKDAY_INSTANCES else "not expected"
+
+
 @app.route("/health/freshness")
 def freshness():
-    """Fails when readings have stopped arriving, or the count has frozen.
+    """Fails when readings have stopped arriving, the count has frozen, or
+    today's forecast is overdue.
 
     Separate from /health on purpose. Fly's health check watches /health and
     restarts on failure, so staleness must not fail that -- a dead sensor API
@@ -659,6 +684,11 @@ def freshness():
     sensor keeps answering on time with the same number. The hour is measured
     between readings, not up to now: readings that stop are already stale, and
     silence is no evidence that the count held.
+
+    A missing forecast is the other failure the page hides. Without one the
+    dashboard falls back to the curve, which is right for visitors and exactly
+    why nobody would notice the job had stopped. It counts from
+    FORECAST_DUE_HOUR, and only on days that have a curve (forecast_state).
     """
     try:
         row = db().execute(
@@ -678,11 +708,18 @@ def freshness():
     if not row:
         return jsonify({"fresh": False, "reason": "no readings recorded"}), 503
 
-    age = (_now() - row["newest"]).total_seconds()
+    now = _now()
+    try:
+        forecast = forecast_state(db(), now)
+    except Exception as error:
+        return jsonify({"fresh": False, "reason": f"could not check today's forecast: {error}"}), 503
+
+    age = (now - row["newest"]).total_seconds()
     held = (row["newest"] - row["unchanged_since"]).total_seconds()
     stale = age > STALE_AFTER_SECONDS
     frozen = row["count"] >= FROZEN_MIN_COUNT and held >= FROZEN_AFTER_SECONDS
-    fresh = not stale and not frozen
+    forecast_missing = forecast == "missing"
+    fresh = not stale and not frozen and not forecast_missing
     body = {
         "fresh": fresh,
         "stale": stale,
@@ -692,12 +729,16 @@ def freshness():
         "lastReadingAt": row["newest"].astimezone(LOCAL_TZ).isoformat(),
         "count": row["count"],
         "unchangedSince": row["unchanged_since"].astimezone(LOCAL_TZ).isoformat(),
+        "forecast": forecast,
+        "forecastMissing": forecast_missing,
     }
     reasons = []
     if stale:
         reasons.append(f"no reading for {round(age / 60)} minutes")
     if frozen:
         reasons.append(f"count frozen at {row['count']} for {round(held / 60)} minutes")
+    if forecast_missing:
+        reasons.append(f"no forecast for today by {FORECAST_DUE_HOUR:02d}:00")
     if reasons:
         body["reason"] = "; ".join(reasons)
     return jsonify(body), (200 if fresh else 503)

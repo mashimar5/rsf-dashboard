@@ -152,6 +152,62 @@ class ForecastDayTest(SeededTest):
         self.assertIsNone(self.forecast())
 
 
+@needs_modelling
+class ForecastJobTest(SeededTest):
+    """The job reads, lets go of its connection, trains, then writes. On
+    2026-09-13 every run failed at the write: training on the throttled shared
+    CPU took about ten minutes, and a transaction left open across it outlived
+    Neon's five-minute idle-in-transaction timeout."""
+
+    def idle_in_transaction_elsewhere(self):
+        row = self.connection.execute(
+            """SELECT COUNT(*) AS n FROM pg_stat_activity
+               WHERE datname = current_database() AND state = 'idle in transaction'
+                 AND pid <> pg_backend_pid()""").fetchone()
+        self.connection.commit()
+        return row["n"]
+
+    def test_no_transaction_is_left_open_while_the_model_trains(self):
+        self.seed_five_weeks()
+        seen, test = [], self
+
+        class Watching(ForecastDayTest.Transparent):
+            def fit(self, X, y):
+                seen.append(test.idle_in_transaction_elsewhere())
+                return super().fit(X, y)
+
+        outcome, _ = forest.forecast_and_store(self.TARGET, model_factory=Watching)
+
+        self.assertEqual(outcome, "forecast stored")
+        self.assertEqual(seen, [0], "a transaction held across training dies at Neon's timeout")
+        self.assertIsNotNone(store.forecast_for(self.connection, self.TARGET))
+
+    def test_an_existing_forecast_is_left_alone_unless_forced(self):
+        self.seed_five_weeks()
+        store.save_forecast(self.connection, self.TARGET, {h: 0.9 for h in range(24)}, model="forest")
+
+        class Untouchable:
+            def __init__(self):
+                raise AssertionError("no model is built when a forecast is already stored")
+
+        self.assertEqual(forest.forecast_and_store(self.TARGET, model_factory=Untouchable)[0],
+                         "already forecast")
+        outcome, by_hour = forest.forecast_and_store(
+            self.TARGET, model_factory=ForecastDayTest.Transparent, force=True)
+
+        self.assertEqual(outcome, "forecast stored")
+        self.assertEqual(store.forecast_for(self.connection, self.TARGET)["by_hour"], by_hour)
+
+    def test_a_dry_run_stores_nothing(self):
+        self.seed_five_weeks()
+        outcome, by_hour = forest.forecast_and_store(
+            self.TARGET, model_factory=ForecastDayTest.Transparent, dry_run=True)
+
+        self.assertEqual(outcome, "forecast (dry run)")
+        self.assertEqual(sorted(by_hour), list(range(24)))
+        self.assertIsNone(store.forecast_for(self.connection, self.TARGET))
+
+
 class ForecastStoreTest(testing.DatabaseTest):
     DAY = date(2026, 9, 14)
 

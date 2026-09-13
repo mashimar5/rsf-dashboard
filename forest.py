@@ -355,21 +355,60 @@ def weekly_bootstrap(days: list[DayScore], resamples: int = 2000, seed: int = 0)
     return float(low), float(high)
 
 
-def forecast_day(conn, day: date, model_factory=default_model) -> dict[int, float] | None:
-    """The forest's forecast for every hour of `day`, trained on every hour before it.
+def prepare_forecast(conn, day: date) -> tuple[list[Row], list[Row]] | None:
+    """The hours to train on and the day's hours to forecast. Reads only.
 
     None when the dashboard would show no curve for the day -- fewer than
     MIN_INSTANCES comparable days -- because the forest is judged as an
     improvement on the curve and has nothing to improve on there.
     """
-    import numpy as np
-
     rows = build_rows(conn, FIRST_DAY, day)
     target = [r for r in rows if r.day == day]
     train = [r for r in rows if r.day < day and r.actual is not None and r.curve is not None]
     if not target or target[0].weeks < MIN_INSTANCES or not train:
         return None
+    return train, target
+
+
+def fit_forecast(train: list[Row], target: list[Row], model_factory=default_model) -> dict[int, float]:
+    """Train on `train` and forecast every hour in `target`. No database."""
+    import numpy as np
+
     model = model_factory()
     model.fit(np.array([r.features for r in train]), np.array([r.actual for r in train]))
     predicted = model.predict(np.array([r.features for r in target]))
     return {r.hour: float(p) for r, p in zip(target, predicted)}
+
+
+def forecast_day(conn, day: date, model_factory=default_model) -> dict[int, float] | None:
+    """The forest's forecast for every hour of `day`, trained on every hour before it."""
+    prepared = prepare_forecast(conn, day)
+    return None if prepared is None else fit_forecast(*prepared, model_factory=model_factory)
+
+
+def forecast_and_store(day: date, model_factory=default_model, force: bool = False,
+                       dry_run: bool = False) -> tuple[str, dict[int, float] | None]:
+    """The scheduled job: read, let go of the connection, train, then write.
+
+    Training takes about a minute on a fresh machine and around ten on the
+    throttled shared CPU. A transaction held open across it outlives Neon's
+    five-minute idle-in-transaction timeout, which kills the connection and the
+    final write with it; every run on 2026-09-13 failed that way. So the read
+    transaction is closed and the connection returned before training starts,
+    and the write takes a fresh one.
+    """
+    with store.connection() as conn:
+        stored = None if (force or dry_run) else store.forecast_for(conn, day)
+        prepared = None if stored else prepare_forecast(conn, day)
+        conn.commit()
+    if stored:
+        return "already forecast", None
+    if prepared is None:
+        return "no curve", None
+
+    by_hour = fit_forecast(*prepared, model_factory=model_factory)
+    if dry_run:
+        return "forecast (dry run)", by_hour
+    with store.connection() as conn:
+        store.save_forecast(conn, day, by_hour, model="forest")
+    return "forecast stored", by_hour

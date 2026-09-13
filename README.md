@@ -171,7 +171,7 @@ omits one it does. Only structural claims can be checked that way; prose like
 | `/api/preferences` | `DELETE` clears scheduling preferences. |
 | `/auth/google`, `/auth/callback`, `/auth/logout` | Google sign-in. |
 | `/health` | Liveness. Returns 503 only for conditions a restart could fix; Fly's health check watches this. |
-| `/health/freshness` | Returns 503 when readings have stopped, or the count has frozen. For an external uptime monitor, which pages a human rather than restarting. |
+| `/health/freshness` | Returns 503 when readings have stopped, the count has frozen, or today's forecast is missing after 03:00. For an external uptime monitor, which pages a human rather than restarting. |
 | `/privacy` | Privacy policy. |
 
 ## Configuration
@@ -264,6 +264,7 @@ a one-time import, not a way to fill tomorrow's gaps.
 | Liveness | `/health` | Fly health check, every 60s | Restart the machine |
 | Freshness | `/health/freshness` | UptimeRobot, every 5 min | Email a human |
 | Frozen count | `/health/freshness` | The same monitor | Email a human |
+| Missing forecast | `/health/freshness` | The same monitor | Email a human |
 
 The split is deliberate. `/health` returns 503 only for conditions a restart
 could plausibly fix — the database unreachable, or the collector thread dead
@@ -302,6 +303,18 @@ sixteen identical readings — a stricter test than the import's six ten-minute
 rows — and the floor of 10 is what lets an empty gym read 0 all night. In the
 first nine days of live collection, no count of 10 or more held for longer than
 ten minutes.
+
+**A missing forecast fails freshness too.** When the forecast job fails, the
+dashboard falls back to the curve, which is right for visitors and exactly why
+nobody would notice. So from 03:00 in Berkeley, on a day with a curve (three or
+more comparable days), a day without a complete 24-hour forecast returns 503
+with `no forecast for today by 03:00`. Before then the response says
+`"forecast": "not due"`: the job runs hourly on a fuzzy schedule, and by 03:00 a
+failed first attempt has had its retry. On days with too little history the job
+stores nothing by design, and the response says `"not expected"`. It shares the
+endpoint for the frozen count's reason, a monitor already watching with nothing
+new to set up, and `/health` stays out of it, because restarting the app cannot
+fix a job on another machine.
 
 ## Layout
 
@@ -484,6 +497,13 @@ backtest retrained monthly, so daily retraining only gives it more to learn
 from. Rebuilding five years of features takes about a second, because the curve
 is recomputed in memory by the dashboard query's own rules, and a test holds the
 two equal: one query per day took six and a half minutes from Fly.
+
+The job reads everything it needs, lets go of its database connection, trains,
+and only then writes, on a fresh connection. The order matters. Training takes
+about a minute on a freshly created machine and around ten on the throttled
+shared CPU, and Neon kills a transaction left idle for five minutes. Every run
+on 2026-09-13 failed at the final write that way, silently, which is what the
+missing-forecast check in Monitoring now catches.
 
 **Model and policy are separate**, because they fail for unrelated reasons. A
 correct forecast can still produce a useless suggestion: "the quietest hour is

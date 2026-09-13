@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from unittest.mock import patch
 
 import app
@@ -211,3 +211,105 @@ class FrozenCountTest(testing.DatabaseTest):
 
         self.assertEqual(status, 200)
         self.assertFalse(body["frozen"])
+
+
+MONDAY = date(2026, 9, 14)
+
+
+def berkeley(day, hour, minute=0):
+    return datetime.combine(day, time(hour, minute), app.LOCAL_TZ).astimezone(timezone.utc)
+
+
+class ForecastMissingTest(testing.DatabaseTest):
+    """The forecast job fails quietly by design: the dashboard falls back to the
+    curve, so the page itself never shows that anything is wrong. The monitor
+    has to notice instead."""
+
+    def get(self, at):
+        with patch.object(app, "_now", return_value=at):
+            response = app.app.test_client().get("/health/freshness")
+        return response.status_code, response.get_json()
+
+    def history_for(self, day, weeks):
+        """One reading on each of the `weeks` same weekdays before `day`."""
+        for back in range(1, weeks + 1):
+            store.save(self.connection, Reading(60, 150, berkeley(day - timedelta(weeks=back), 8)))
+
+    def live_until(self, at):
+        """Two recent, differing counts, so staleness and freezing stay out of it."""
+        store.save(self.connection, Reading(5, 150, at - timedelta(minutes=6)))
+        store.save(self.connection, Reading(6, 150, at - timedelta(minutes=2)))
+
+    def forecast(self, day):
+        store.save_forecast(self.connection, day, {hour: 0.4 for hour in range(24)}, model="forest")
+
+    def test_a_missing_forecast_after_three_fails_freshness_but_not_health(self):
+        at = berkeley(MONDAY, 3, 30)
+        self.history_for(MONDAY, 3)
+        self.live_until(at)
+        status, body = self.get(at)
+        health_status = app.app.test_client().get("/health").status_code
+
+        self.assertEqual(status, 503)
+        self.assertEqual(body["forecast"], "missing")
+        self.assertTrue(body["forecastMissing"])
+        self.assertFalse(body["stale"] or body["frozen"], "the readings themselves are fine")
+        self.assertIn("no forecast for today by 03:00", body["reason"])
+        self.assertEqual(health_status, 200, "a restart cannot fix the forecast job")
+
+    def test_before_three_it_is_not_yet_due(self):
+        at = berkeley(MONDAY, 2, 59)
+        self.history_for(MONDAY, 3)
+        self.live_until(at)
+        status, body = self.get(at)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["forecast"], "not due")
+
+    def test_a_stored_forecast_passes(self):
+        at = berkeley(MONDAY, 3, 30)
+        self.history_for(MONDAY, 3)
+        self.live_until(at)
+        self.forecast(MONDAY)
+        status, body = self.get(at)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["forecast"], "stored")
+        self.assertFalse(body["forecastMissing"])
+
+    def test_none_is_expected_on_a_day_the_dashboard_shows_no_curve(self):
+        """Below three comparable days the job stores nothing, by design."""
+        at = berkeley(MONDAY, 3, 30)
+        self.history_for(MONDAY, 2)
+        self.live_until(at)
+        status, body = self.get(at)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["forecast"], "not expected")
+
+    def test_half_a_forecast_is_still_missing(self):
+        at = berkeley(MONDAY, 3, 30)
+        self.history_for(MONDAY, 3)
+        self.live_until(at)
+        for hour in range(23):
+            self.connection.execute(
+                "INSERT INTO forecasts (for_date, hour, pct, model, made_at)"
+                " VALUES (%s, %s, 0.4, 'forest', NOW())", (MONDAY, hour))
+        self.connection.commit()
+        status, body = self.get(at)
+
+        self.assertEqual(status, 503)
+        self.assertEqual(body["forecast"], "missing")
+
+    def test_today_is_berkeleys_date_not_utcs(self):
+        """At 20:00 in Berkeley it is already Tuesday in UTC, and Tuesdays have
+        a curve too, so reading the UTC date would report a missing forecast."""
+        at = berkeley(MONDAY, 20)
+        self.history_for(MONDAY, 3)
+        self.history_for(MONDAY + timedelta(days=1), 3)
+        self.live_until(at)
+        self.forecast(MONDAY)
+        status, body = self.get(at)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["forecast"], "stored")
