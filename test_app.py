@@ -1,12 +1,13 @@
 import os
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import app
-import testing  # noqa: F401  -- points the pool at the test database
+import store
+import testing  # points the pool at the test database, on import
 from density import Reading
 
 TZ = ZoneInfo("America/Los_Angeles")
@@ -249,6 +250,79 @@ class DayApiTest(unittest.TestCase):
         for minute, count, capacity in samples:
             self.assertIsInstance(minute, int)
             self.assertEqual((count, capacity), (100, 150))
+
+
+# 23:00 on a Thursday in Berkeley. In the sensor's history, counts froze mostly
+# from late evening until its nightly reset at 09:00 UTC.
+NOW = datetime(2026, 9, 11, 6, 0, tzinfo=timezone.utc)
+
+
+class FrozenCountNoticeTest(testing.DatabaseTest):
+    """The page warns when the live number looks stuck, by the rule the
+    monitor alerts on, so a visitor does not plan around a stalled sensor."""
+
+    def hold(self, count, since, until):
+        """`count` at `since` and at `until`, polled every four minutes between."""
+        at = until
+        while at > since:
+            store.save(self.connection, Reading(count, 150, at))
+            at -= timedelta(minutes=4)
+        store.save(self.connection, Reading(count, 150, since))
+
+    def day(self, live, date=None):
+        """/api/day at NOW, with the sensor API reporting `live` people."""
+        query = f"?date={date}" if date else ""
+        with patch.object(app, "_now", return_value=NOW), \
+             patch.object(app, "fetch_reading", return_value=Reading(live, 150, NOW)), \
+             patch.object(app.hours, "todays_hours", return_value=None):
+            return app.app.test_client().get("/api/day" + query).get_json()
+
+    def test_a_count_frozen_for_an_hour_is_flagged_from_its_first_reading(self):
+        self.hold(12, since=NOW - timedelta(minutes=92), until=NOW - timedelta(minutes=2))
+        day = self.day(live=12)
+
+        self.assertEqual(datetime.fromisoformat(day["frozenSince"]), NOW - timedelta(minutes=92))
+        self.assertFalse(day["stale"], "the readings themselves are on time")
+
+    def test_a_count_that_has_moved_on_is_not_called_stuck(self):
+        """The page reads the API as it loads, so just after the sensor recovers
+        it can show a new count before the collector has stored one."""
+        self.hold(12, since=NOW - timedelta(minutes=92), until=NOW - timedelta(minutes=2))
+
+        self.assertIsNone(self.day(live=0)["frozenSince"])
+
+    def test_only_todays_view_carries_the_warning(self):
+        """A past day has no live number to be stuck."""
+        store.save(self.connection, Reading(40, 150, NOW - timedelta(days=2)))
+        self.hold(12, since=NOW - timedelta(minutes=92), until=NOW - timedelta(minutes=2))
+        today = NOW.astimezone(app.LOCAL_TZ).date()
+
+        self.assertIsNotNone(self.day(live=12, date=today)["frozenSince"])
+        self.assertIsNone(self.day(live=12, date=today - timedelta(days=1))["frozenSince"])
+
+    def test_the_page_and_the_monitor_agree_at_the_edges_of_the_rule(self):
+        """Both read one function, so a threshold changed for one changes for
+        the other. This holds them together if that ever stops being true."""
+        cases = [
+            # (count, since, until) in minutes before NOW, and the verdict
+            ("ten people for exactly an hour", [(10, 61, 1)], True),
+            ("a minute short of an hour", [(13, 64, 64), (12, 60, 1)], False),
+            ("nine people for five hours", [(9, 300, 1)], False),
+            ("54 minutes, then silence", [(12, 64, 10)], False),
+            ("an hour and a half, then silence", [(12, 120, 30)], True),
+        ]
+        for description, holds, frozen in cases:
+            with self.subTest(description):
+                self.connection.execute(f"TRUNCATE {testing.TABLES} RESTART IDENTITY CASCADE")
+                self.connection.commit()
+                for count, since, until in holds:
+                    self.hold(count, NOW - timedelta(minutes=since), NOW - timedelta(minutes=until))
+                shown = store.latest(self.connection).count
+                with patch.object(app, "_now", return_value=NOW):
+                    monitor = app.app.test_client().get("/health/freshness").get_json()
+
+                self.assertEqual(monitor["frozen"], frozen)
+                self.assertEqual(self.day(live=shown)["frozenSince"] is not None, frozen)
 
 
 if __name__ == "__main__":

@@ -65,10 +65,18 @@ export default function App() {
     <main>
       <h1>RSF WEIGHT ROOMS</h1>
 
-      {day.stale && (
+      {/* One warning at a time: once readings have stopped, the number is
+          not current whether or not it was stuck first. */}
+      {day.stale ? (
         <div className="card warn">
           Readings have stopped arriving. The number below is the last one
           recorded, not the current occupancy.
+        </div>
+      ) : day.frozenSince && (
+        <div className="card warn">
+          The count has not changed since {clock(day.frozenSince)}, so the
+          sensor looks stuck. The number below is probably not the current
+          occupancy.
         </div>
       )}
 

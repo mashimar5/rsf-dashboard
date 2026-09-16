@@ -132,6 +132,11 @@ export interface DayView {
   /** True when the newest reading is old enough that collection is
    *  probably broken. Occupancy cannot be backfilled, so silence is costly. */
   stale: boolean
+  /** When the count on screen was first read, if it has held long enough
+   *  since to be a stuck sensor rather than a steady room: 10 or more people
+   *  for an hour, the rule /health/freshness alerts on. Today only; null
+   *  otherwise, including once the live count has moved on. */
+  frozenSince: string | null
   preferences: Preferences | null
   /** False when no API key is configured; the input is hidden. */
   /** False when no API key is configured; the question box is hidden. */

@@ -648,6 +648,40 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def latest_run(connection) -> dict | None:
+    """The newest stored count, the first reading of it since the count last
+    changed, and whether holding it that long means the sensor has frozen.
+
+    The one place the frozen-count rule lives: /health/freshness alerts on it
+    and the day view warns on it, so the monitor and the page cannot disagree.
+    The hour is measured between readings, not up to now -- readings that stop
+    are stale, on their own threshold, and silence is no evidence the count
+    held. Only `readings` is read: history runs right up to the first live
+    reading, so reading it here could extend a run onto the live feed.
+
+    None when nothing has been recorded.
+    """
+    row = connection.execute(
+        """SELECT latest.observed_at AS newest, latest.count,
+                  -- the first reading since the count last changed
+                  (SELECT MIN(observed_at) FROM readings
+                   WHERE observed_at > COALESCE(
+                       (SELECT MAX(observed_at) FROM readings
+                        WHERE count <> latest.count),
+                       '-infinity')) AS unchanged_since
+           FROM (SELECT observed_at, count FROM readings
+                 ORDER BY observed_at DESC LIMIT 1) AS latest"""
+    ).fetchone()
+    if not row:
+        return None
+    held = (row["newest"] - row["unchanged_since"]).total_seconds()
+    return {
+        **row,
+        "held_seconds": held,
+        "frozen": row["count"] >= FROZEN_MIN_COUNT and held >= FROZEN_AFTER_SECONDS,
+    }
+
+
 def forecast_state(connection, now: datetime) -> str:
     """Where today's forest forecast stands: "stored", "not due", "not expected"
     or "missing".
@@ -681,9 +715,8 @@ def freshness():
 
     A frozen count is staleness the timestamps cannot show. The API reports no
     measurement time, so readings are stamped when fetched, and a stalled
-    sensor keeps answering on time with the same number. The hour is measured
-    between readings, not up to now: readings that stop are already stale, and
-    silence is no evidence that the count held.
+    sensor keeps answering on time with the same number. The rule is
+    latest_run's, which the day view warns on too.
 
     A missing forecast is the other failure the page hides. Without one the
     dashboard falls back to the curve, which is right for visitors and exactly
@@ -691,21 +724,11 @@ def freshness():
     FORECAST_DUE_HOUR, and only on days that have a curve (forecast_state).
     """
     try:
-        row = db().execute(
-            """SELECT latest.observed_at AS newest, latest.count,
-                      -- the first reading since the count last changed
-                      (SELECT MIN(observed_at) FROM readings
-                       WHERE observed_at > COALESCE(
-                           (SELECT MAX(observed_at) FROM readings
-                            WHERE count <> latest.count),
-                           '-infinity')) AS unchanged_since
-               FROM (SELECT observed_at, count FROM readings
-                     ORDER BY observed_at DESC LIMIT 1) AS latest"""
-        ).fetchone()
+        run = latest_run(db())
     except Exception as error:
         return jsonify({"fresh": False, "reason": f"database unreachable: {error}"}), 503
 
-    if not row:
+    if not run:
         return jsonify({"fresh": False, "reason": "no readings recorded"}), 503
 
     now = _now()
@@ -714,10 +737,9 @@ def freshness():
     except Exception as error:
         return jsonify({"fresh": False, "reason": f"could not check today's forecast: {error}"}), 503
 
-    age = (now - row["newest"]).total_seconds()
-    held = (row["newest"] - row["unchanged_since"]).total_seconds()
+    age = (now - run["newest"]).total_seconds()
     stale = age > STALE_AFTER_SECONDS
-    frozen = row["count"] >= FROZEN_MIN_COUNT and held >= FROZEN_AFTER_SECONDS
+    frozen = run["frozen"]
     forecast_missing = forecast == "missing"
     fresh = not stale and not frozen and not forecast_missing
     body = {
@@ -726,9 +748,9 @@ def freshness():
         "frozen": frozen,
         "ageSeconds": round(age),
         "thresholdSeconds": STALE_AFTER_SECONDS,
-        "lastReadingAt": row["newest"].astimezone(LOCAL_TZ).isoformat(),
-        "count": row["count"],
-        "unchangedSince": row["unchanged_since"].astimezone(LOCAL_TZ).isoformat(),
+        "lastReadingAt": run["newest"].astimezone(LOCAL_TZ).isoformat(),
+        "count": run["count"],
+        "unchangedSince": run["unchanged_since"].astimezone(LOCAL_TZ).isoformat(),
         "forecast": forecast,
         "forecastMissing": forecast_missing,
     }
@@ -736,7 +758,7 @@ def freshness():
     if stale:
         reasons.append(f"no reading for {round(age / 60)} minutes")
     if frozen:
-        reasons.append(f"count frozen at {row['count']} for {round(held / 60)} minutes")
+        reasons.append(f"count frozen at {run['count']} for {round(run['held_seconds'] / 60)} minutes")
     if forecast_missing:
         reasons.append(f"no forecast for today by {FORECAST_DUE_HOUR:02d}:00")
     if reasons:
@@ -811,6 +833,7 @@ def day_view(connection, viewed, today, earliest_day):
         return int((reading.observed_at.astimezone(LOCAL_TZ) - midnight).total_seconds() // 60)
 
     live = None
+    frozen_since = None
     if is_today:
         reading, is_live = current_reading(connection)
         if reading:
@@ -821,6 +844,13 @@ def day_view(connection, viewed, today, earliest_day):
                 "observedAt": reading.observed_at.astimezone(LOCAL_TZ).isoformat(),
                 "isLive": is_live,
             }
+            # The monitor's rule, but only while the number on screen is the
+            # count that froze: the page reads the API as it loads, so just
+            # after the sensor recovers it can show a new count before the
+            # collector has stored one.
+            run = latest_run(connection)
+            if run and run["frozen"] and run["count"] == reading.count:
+                frozen_since = run["unchanged_since"].astimezone(LOCAL_TZ).isoformat()
 
     summary = None
     if not is_today:
@@ -944,9 +974,10 @@ def day_view(connection, viewed, today, earliest_day):
         ),
         "feedback": feedback_prompt(connection, viewed, is_today),
         "stale": (
-            (datetime.now(LOCAL_TZ) - reading.observed_at).total_seconds() > STALE_AFTER_SECONDS
+            (_now() - reading.observed_at).total_seconds() > STALE_AFTER_SECONDS
             if is_today and reading else False
         ),
+        "frozenSince": frozen_since,
         "preferences": preferences,
         "askAvailable": ask.available(),
         "auth": {
@@ -967,7 +998,7 @@ def day_view(connection, viewed, today, earliest_day):
 @app.route("/api/day")
 def api_day():
     connection = db()
-    today = datetime.now(LOCAL_TZ).date()
+    today = _now().astimezone(LOCAL_TZ).date()
     first = store.earliest(connection)
     earliest_day = first.observed_at.astimezone(LOCAL_TZ).date() if first else today
     return jsonify(day_view(connection, requested_date(today, earliest_day), today, earliest_day))

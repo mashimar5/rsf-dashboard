@@ -294,9 +294,8 @@ restarts on, because the right response is to tell someone.
 
 Threshold is 15 minutes — three missed cycles at the deployed interval, which
 absorbs a transient API failure without crying wolf. The dashboard also says
-plainly when readings have stopped, so the headline number is not mistaken for
-current occupancy. It says nothing yet when the count is frozen; only the
-monitor does.
+plainly when readings have stopped, or when the count looks stuck, so the
+headline number is not mistaken for current occupancy.
 
 **A frozen count fails freshness too.** The API returns no measurement time, so
 a reading's timestamp proves only that the poll ran. A stalled sensor keeps
@@ -322,6 +321,15 @@ sixteen identical readings — a stricter test than the import's six ten-minute
 rows — and the floor of 10 is what lets an empty gym read 0 all night. In the
 first nine days of live collection, no count of 10 or more held for longer than
 ten minutes.
+
+The dashboard warns on the same rule, computed by the same function, so the
+page and the monitor cannot disagree about what counts as frozen. The warning
+is about the number on screen, though. The page reads the count from the API
+as it loads, while the collector stores one every four minutes, so just after
+the sensor recovers the page can show a new count the stored readings have not
+caught up with. The warning therefore shows only while the number on screen is
+the count that froze. When readings have stopped as well, the page says that
+instead, since either way the number is not current.
 
 **A missing forecast fails freshness too.** When the forecast job fails, the
 dashboard falls back to the curve, which is right for visitors and exactly why
