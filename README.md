@@ -469,9 +469,13 @@ left out rather than repaired:
   over the day, so the whole day goes: 63 days, 44 and 19 respectively. The
   ceiling sits well clear of real crowds — 2026-09-03 genuinely peaked at 157.
 
-That leaves 250,532 readings. Only the count column is used: the file's min and
-max columns contradict it in a fifth to a third of rows, and live readings from
-the same sensor side with the count.
+When it was imported the file held 306,720 rows, running to 2026-09-09. The
+cutoff removed 43,386, the 63 drifted days 9,072 (144 ten-minute rows each) and
+frozen stretches 2,159, and 1,571 fell at or after the first live reading, where
+live data takes precedence. That leaves 250,532 readings; every figure but the
+9,072 comes straight from the import's dry-run report. Only the count column is
+used: the file's min and max columns contradict it in a fifth to a third of
+rows, and live readings from the same sensor side with the count.
 
 **A random forest beats the curve on the curve's own test.** `forest.py`
 forecasts each hour a day ahead from where the day sits in the academic year,
