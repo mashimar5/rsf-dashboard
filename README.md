@@ -7,7 +7,7 @@ weight rooms, and an agent that suggests when to go.
 
 **Live: [rsf-dashboard.fly.dev](https://rsf-dashboard.fly.dev)**
 
-Python · Flask · Postgres · SQL · React 19 · TypeScript · Vite · Claude API · Google OAuth · Docker · Fly.io · GitHub Actions
+Python · Flask · Postgres · SQL · scikit-learn · React 19 · TypeScript · Vite · Claude API · Google OAuth · Docker · Fly.io · GitHub Actions
 
 Shows how full the weight rooms are right now, the day's occupancy curve, and
 any previous day's. A collector records a reading every four minutes, and five
@@ -46,8 +46,9 @@ Backend pieces, each independent:
   cycle in exchange for expiry handling and a retry-on-401 path, so the
   stateless version wins at this rate. The response carries no measurement
   time, so readings are stamped at fetch time.
-- **History** is appended to Postgres. The collector runs in-process in
-  deployment, and can be run standalone or from cron locally.
+- **Live readings** are appended to Postgres, in the `readings` table. The
+  collector runs in-process in deployment, and can be run standalone or from
+  cron locally.
 - **Imported history** covers the years before collection began: the sensor's
   own ten-minute counts from September 2021, archived by Anthony Ozerov and
   published under CC0 at <https://aozerov.com/berkeley/weightroom/>. It is
@@ -65,8 +66,9 @@ Backend pieces, each independent:
   has no answer for — choosing a dispersion measure, scoring, backtesting. A
   random forest (`forest.py`) beats the curve by two points in backtesting, and
   draws today's line whenever its forecast is stored; see the notes below.
-- **Suggestion** (`policy.py`) turns that curve into recommendations, filtered
-  by opening hours and — when signed in — by Google Calendar free/busy.
+- **Suggestion** (`policy.py`) turns today's forecast into recommendations —
+  the forest's when one is stored, the curve otherwise — filtered by opening
+  hours and, when signed in, by Google Calendar free/busy.
 
 ## Running locally
 
@@ -128,6 +130,18 @@ Configuration for why:
 Google sign-in needs the OAuth variables below; without them the dashboard runs
 fine and simply offers no calendar features.
 
+To reproduce the backtests and the forecast locally, load the imported history
+into `rsf_dev` and install the modelling dependencies, which the app itself
+never needs:
+
+```bash
+.venv/bin/python tools/backfill_history.py          # download and clean the history into rsf_dev
+.venv/bin/pip install -r requirements-ml.txt
+.venv/bin/python tools/backtest_curve.py            # score the curve, with and without period matching
+.venv/bin/python tools/backtest_forest.py           # score the forest against the curve, 2023–2026
+.venv/bin/python tools/forecast_today.py --dry-run  # print today's forecast without storing it
+```
+
 ## Tests
 
 ```bash
@@ -161,7 +175,7 @@ omits one it does. Only structural claims can be checked that way; prose like
 | Path | Purpose |
 | --- | --- |
 | `/` | Dashboard. `?date=YYYY-MM-DD` selects a day, clamped to the recorded range. |
-| `/api/day` | Everything one day's view needs: live reading or summary, samples, typical curve, hours, suggestions, booking, navigation bounds. |
+| `/api/day` | Everything one day's view needs: live reading or summary, samples, the typical curve (today's forest forecast, when one is stored), hours, suggestions, booking, navigation bounds. |
 | `/api/current` | Live count, capacity, percentage, and whether it came from the API or the last stored reading. |
 | `/api/history?hours=N` | Raw readings for the last N hours (default 24). |
 | `/api/hours` | What the hours scraper parsed, which table each day resolved to, and the cache age. Use this when the hours line disappears. |
@@ -191,9 +205,18 @@ omits one it does. Only structural claims can be checked that way; prose like
 
 ## Deployment
 
-Runs on Fly.io as a single machine, with the database on Neon (free tier, US
-West 2, reached over the **pooled** endpoint). The 1 GB Fly volume now holds
-only the hours cache.
+Runs on Fly.io as two machines, with the database on Neon (free tier, US West
+2, reached over the **pooled** endpoint): the app machine, which serves the
+dashboard and runs the collector, and a scheduled machine for the forecast job,
+described below. The app machine's 1 GB volume holds the hours cache and
+`readings.db`, the SQLite database from before the move to Postgres, kept as a
+fallback.
+
+`fly deploy` builds and deploys the app machine:
+
+```bash
+fly deploy
+```
 
 `COLLECT_INTERVAL` is 240 seconds rather than 300 because Neon's free tier
 suspends the compute after roughly five minutes idle; a five-minute interval
@@ -236,10 +259,6 @@ calendar, rebuild it with
 `fly machine update <forecast machine id> --dockerfile Dockerfile.forecast`
 (`fly machine list` shows the id). The app's secrets reach it like any other
 machine in the app, so `DATABASE_URL` still never leaves Fly.
-
-```bash
-fly deploy
-```
 
 Three things that must stay as they are:
 
@@ -324,7 +343,7 @@ fix a job on another machine.
 | `store.py` | Postgres schema, queries, the connection pool, the weekday-curve SQL, and the calendar sync. |
 | `collect.py` | The recorder. One-shot by default. |
 | `hours.py` | Hours scraping, table selection, and caching. |
-| `evaluate.py` | The typical-weekday curve, dispersion, scoring and backtesting. |
+| `evaluate.py` | Dispersion, scoring and backtesting for the typical-weekday curve, which is SQL in `store.py`. |
 | `policy.py` | Turning a forecast into suggested windows. |
 | `google_auth.py` | OAuth, free/busy, and calendar writes. |
 | `intent.py` | The preferences schema, and the bounds a schema cannot enforce. |
@@ -336,13 +355,16 @@ fix a job on another machine.
 | `tools/make_icons.py` | Regenerates the home-screen icon. Needs Pillow, which is deliberately not a runtime dependency. |
 | `tools/backfill_history.py` | The one-time import of sensor history, and the rules that decide what to keep. |
 | `tools/backtest_curve.py` | Scores the curve against history it never saw, with and without period matching. |
-| `forest.py` | A random forest forecast: day-ahead features, monthly walk-forward retraining, and the comparison with the curve. Offline only. |
+| `forest.py` | The random forest: day-ahead features, the walk-forward backtest, and the forecast job's read, train and write. Never imported by the app; it runs on the forecast machine. |
 | `tools/backtest_forest.py` | Scores the forest against the curve on the same days; `--dev` runs the 2022 check. |
 | `tools/forecast_today.py` | The scheduled job: forecasts today with the forest and stores it for the dashboard. |
+| `Dockerfile.forecast` | The forecast machine's image: Python with the modelling dependencies, running `tools/forecast_today.py`. |
+| `requirements-ml.txt` | numpy and scikit-learn, for `forest.py` and its tools. The app's image never installs them. |
 | `data/academic_calendar.csv` | Berkeley's academic periods and holidays, from the Registrar's calendars. |
 
-The Docker build is multi-stage: Node builds the frontend, then the Python image
-copies the built assets in.
+The app's Docker build is multi-stage: Node builds the frontend, then the Python
+image copies the built assets in. `Dockerfile.forecast` is a plain Python image
+with the modelling dependencies.
 
 ## Notes on a few decisions
 
@@ -535,15 +557,17 @@ public. Filtering suggestions by a calendar leaks that calendar: the difference
 between the publicly computable quietest windows and the ones shown is exactly
 the user's schedule, so gating was not optional.
 
-**The model sits at the edge, not in the loop.** `ask.py` is the only place
-that calls an LLM. Preferences it sets are stored as plain numbers, and every
-downstream decision — which windows are eligible, how they rank, what gets
-booked — reads those numbers. A suggestion is therefore never one model call
+**The language model sits at the edge, not in the loop.** `ask.py` is the only
+place that calls an LLM. Preferences it sets are stored as plain numbers, and
+every downstream decision — which windows are eligible, how they rank, what
+gets booked — reads those numbers. A suggestion is therefore never one LLM call
 away from being different, the policy stays unit-testable without a network,
 and the feature degrades to "hidden" rather than "broken" when no API key is
-set.
+set. The forecasting model is different: the forest does drive suggestions, but
+it forecasts once a night and stores the result, so a page load never waits on
+it.
 
-**The model gets tools, not a database.** Eight vetted queries with typed
+**The chat gets tools, not a database.** Eight vetted queries with typed
 arguments: the data overview, narrower slices, the weekday curve, past
 sessions, and three that read or write the single settings row. A confused
 model can ask a sensible question of the wrong slice; it cannot write SQL,
@@ -556,6 +580,13 @@ pattern, because it never saw more than one slice at a time. A weekday-by-hour
 grid is 7 × 24 = 168 cells however long collection runs — about 550 tokens — so
 the entire shape fits in context and the model reasons across it. That was an
 architectural fix, not a prompting one.
+
+The history import changed what "the whole dataset" means. The chat reads live
+readings and the five years of imported history together, through the same
+`occupancy` view as the curve, and one grid averaged across every period would
+blend busy term weeks with quiet summers. So the overview defaults to the kind
+of academic period today falls in, over the past year, and the model can ask
+for another kind, or for all of them, when a question is about one.
 
 **One text input, not two.** Preferences used to have their own box, which
 looked like a chat, didn't reply, and silently changed the suggestions above
