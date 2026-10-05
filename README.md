@@ -343,6 +343,35 @@ endpoint for the frozen count's reason, a monitor already watching with nothing
 new to set up, and `/health` stays out of it, because restarting the app cannot
 fix a job on another machine.
 
+## Warehouse models (dbt)
+
+`warehouse/` is a dbt project over the same Postgres, for analytics that do not
+belong in a request. It reads the app's tables as *sources* and never redefines
+them, so `occupancy` and the academic calendar keep one definition each, and the
+dashboard reads none of its models.
+
+| Model | Grain |
+| --- | --- |
+| `stg_occupancy` | Every reading in Berkeley local time, with day, ISO weekday and half-hour bucket. The only model that converts time zones. |
+| `daily_bucket_means` | One row per day and bucket: the "every day gets one vote" aggregation the curve rests on. |
+| `hourly_occupancy` | The hourly grain the random forest trains on. |
+| `weekday_period_profile` | Median, quartiles and range per weekday and academic period over the trailing year. |
+
+```bash
+cd warehouse && .venv/bin/dbt build --profiles-dir .
+```
+
+That runs 36 nodes: the seed, the models and 31 tests, including a grain test
+that fails if a day could be counted twice. `daily_bucket_means` reproduces the
+aggregation inside `store.weekday_bands` row for row — 84,008 of them, agreeing
+to within floating-point noise. Source freshness on `readings` carries the app's
+own 15-minute threshold.
+
+A `snowflake` target exists in the profile and the time-zone macro branches on
+it, but that path is unproven until it runs against a real account.
+`warehouse/README.md` has the details; credentials come from the environment,
+and the directory is excluded from the app's Docker image.
+
 ## Layout
 
 | File | Contents |

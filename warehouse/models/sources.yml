@@ -1,0 +1,49 @@
+version: 2
+
+sources:
+  - name: rsf
+    description: >
+      The dashboard's own tables, created and owned by store.py. dbt reads
+      them and never writes them, so there is exactly one definition of where
+      history stops and what the collector records.
+    schema: public
+    tables:
+      - name: readings
+        description: Live samples, one per poll, four minutes apart.
+        # The dbt-native version of /health/freshness. The thresholds are the
+        # app's: STALE_AFTER_SECONDS is 15 minutes, three missed cycles.
+        loaded_at_field: observed_at
+        freshness:
+          warn_after: {count: 15, period: minute}
+          error_after: {count: 60, period: minute}
+        columns:
+          - name: observed_at
+            description: When the poll ran. The API returns no measurement time.
+            data_tests: [unique, not_null]
+          - name: count
+            description: People in the weight rooms, entries minus exits.
+            data_tests: [not_null]
+          - name: capacity
+            data_tests: [not_null]
+
+      - name: history
+        description: >
+          The sensor vendor's own ten-minute history, imported once and cleaned
+          on the way in by tools/backfill_history.py.
+        columns:
+          - name: observed_at
+            data_tests: [unique, not_null]
+          - name: count
+            data_tests: [not_null]
+
+      - name: occupancy
+        description: >
+          The view the analytics read: live readings, plus history for the time
+          before live collection began, at today's capacity of 150. Taken as a
+          source rather than rebuilt here, so the rule about where history stops
+          lives in one place.
+        columns:
+          - name: observed_at
+            data_tests: [not_null]
+          - name: capacity
+            data_tests: [not_null]

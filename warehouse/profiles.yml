@@ -1,0 +1,28 @@
+# No secrets live here. Everything sensitive comes from the environment, and
+# this file is committed to a public repository.
+#
+#   dbt build --profiles-dir .                 # local Postgres (rsf_dev)
+#   dbt build --profiles-dir . --target snowflake
+rsf:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('PGHOST', 'localhost') }}"
+      port: "{{ env_var('PGPORT', '5432') | int }}"
+      user: "{{ env_var('PGUSER', 'andrewshin') }}"
+      password: "{{ env_var('PGPASSWORD', '') }}"
+      dbname: "{{ env_var('PGDATABASE', 'rsf_dev') }}"
+      schema: analytics
+      threads: 4
+
+    snowflake:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'ACCOUNTADMIN') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'COMPUTE_WH') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'RSF') }}"
+      schema: analytics
+      threads: 4

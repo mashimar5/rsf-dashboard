@@ -1,0 +1,77 @@
+version: 2
+
+models:
+  - name: stg_occupancy
+    description: >
+      Every live and imported reading in Berkeley local time, with the local
+      day, ISO weekday and half-hour bucket the project groups by. The only
+      model that converts time zones.
+    columns:
+      - name: observed_at
+        data_tests: [unique, not_null]
+      - name: local_day
+        data_tests: [not_null]
+      - name: iso_weekday
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7]
+                quote: false
+      - name: bucket
+        description: Half-hours since local midnight, 0 to 47.
+        data_tests: [not_null]
+      - name: pct
+        description: Occupancy as a fraction of capacity. Can exceed 1.
+        data_tests: [not_null]
+
+  - name: daily_bucket_means
+    description: One row per day and bucket, so every instance gets one vote.
+    columns:
+      - name: local_day
+        data_tests: [not_null]
+      - name: pct
+        data_tests: [not_null]
+      - name: samples
+        data_tests: [not_null]
+
+  - name: hourly_occupancy
+    description: The hourly grain the random forest trains on.
+    columns:
+      - name: local_day
+        data_tests: [not_null]
+      - name: local_hour
+        data_tests: [not_null]
+
+  - name: weekday_period_profile
+    description: >
+      Median, quartiles and range per weekday, bucket and academic period over
+      the trailing window. Analytics only; the dashboard reads its own query.
+    columns:
+      - name: kind
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [instruction, rrr, finals, break, summer, holiday, unlabelled]
+      - name: median_pct
+        data_tests: [not_null]
+      - name: instances
+        data_tests: [not_null]
+
+seeds:
+  - name: calendar_days
+    description: >
+      Berkeley's academic calendar, one row per date, exported from the app's
+      `calendar_days` table. The expansion from date ranges, and the precedence
+      that makes a holiday outrank a break, happen in store.calendar_days_from;
+      exporting the resolved table keeps that logic in one language.
+    columns:
+      - name: day
+        data_tests: [unique, not_null]
+      - name: kind
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [instruction, rrr, finals, break, summer, holiday]

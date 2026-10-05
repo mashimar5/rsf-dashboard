@@ -1,0 +1,33 @@
+name: rsf
+version: "1.0.0"
+config-version: 2
+profile: rsf
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# These two must match the app, or the warehouse models describe a different
+# day than the dashboard does: app.LOCAL_TZ and app.BUCKET_MINUTES.
+vars:
+  local_zone: America/Los_Angeles
+  bucket_minutes: 30
+  # How far back the weekday profile looks, measured from the newest reading
+  # rather than from today, so the models are reproducible on a stale copy.
+  profile_days: 365
+
+models:
+  rsf:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+
+seeds:
+  rsf:
+    calendar_days:
+      +column_types:
+        day: date

@@ -18,3 +18,5 @@ static/app
 CLAUDE.md
 DESIGN-*.md
 INTERVIEW-BRIEF.html
+# the dbt project never belongs in the app image
+warehouse/

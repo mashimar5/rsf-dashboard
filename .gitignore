@@ -9,3 +9,8 @@ CLAUDE.md
 readings-backup.sql
 DESIGN-calendar-agent.md
 INTERVIEW-BRIEF.html
+warehouse/.venv/
+warehouse/target/
+warehouse/logs/
+warehouse/dbt_packages/
+warehouse/.user.yml
