@@ -7,7 +7,7 @@ weight rooms, and an agent that suggests when to go.
 
 **Live: [rsf-dashboard.fly.dev](https://rsf-dashboard.fly.dev)**
 
-Python · Flask · Postgres · SQL · scikit-learn · React 19 · TypeScript · Vite · Claude API · Google OAuth · Docker · Fly.io · GitHub Actions
+Python · Flask · Postgres · SQL · dbt · Snowflake · scikit-learn · React 19 · TypeScript · Vite · Claude API · Google OAuth · Docker · Fly.io · GitHub Actions
 
 Shows how full the weight rooms are right now, the day's occupancy curve, and
 any previous day's. A collector records a reading every four minutes, and five
