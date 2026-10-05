@@ -70,10 +70,40 @@ check is what makes the local-time macro trustworthy rather than plausible.
 
 ## Snowflake
 
-The profile has a `snowflake` target reading `SNOWFLAKE_*` from the
-environment, and `macros/local_time.sql` branches on `target.type` for the
-things the two engines spell differently: `AT TIME ZONE` against
-`CONVERT_TIMEZONE`, `EXTRACT(ISODOW …)` against `DAYOFWEEKISO`, and integer
-division. Those branches are written from the documentation and remain
-**unproven until they run against a real account** — what `CONVERT_TIMEZONE`
-returns for a `TIMESTAMP_TZ` input is the first thing to check there.
+The same models run against Snowflake with `--target snowflake`, on a copy of
+the data loaded by `load_snowflake.py`: exported to gzipped CSV, pushed to each
+table's internal stage with `PUT`, and pulled in with `COPY INTO`.
+
+```bash
+set -a; . warehouse/.env; set +a
+.venv/bin/python load_snowflake.py
+.venv/bin/dbt build --profiles-dir . --target snowflake
+```
+
+Both targets build the same 36 nodes, pass the same 31 tests, and produce the
+same numbers:
+
+| | Postgres | Snowflake |
+| --- | --- | --- |
+| `daily_bucket_means` | 84,008 rows | 84,008 rows |
+| `weekday_period_profile` | 1,824 rows | 1,824 rows |
+| Worst value difference | — | 2.2e-16 |
+| 2026-03-08, buckets (spring forward) | 46 | 46 |
+| 2025-11-02, buckets (fall back) | 48 | 48 |
+| `dbt build` | 0.8 s | 8.2 s |
+
+### What actually differed
+
+- **Local time.** `AT TIME ZONE` against `CONVERT_TIMEZONE`, and
+  `EXTRACT(ISODOW …)` against `DAYOFWEEKISO`. They agree to floating-point
+  noise, including on the days a clock change leaves 46 or 48 buckets.
+- **Integer division.** Postgres truncates `int / int`; Snowflake returns a
+  decimal, so the bucket index needs an explicit `floor`.
+- **Identifiers.** Snowflake folds unquoted names to upper case, so the models
+  land as `DAILY_BUCKET_MEANS` and read back with upper-case columns.
+- **Compute is something you size.** The loader sets `COMPUTE_WH` to XSMALL
+  with a 60-second auto-suspend. Storage and compute bill separately, which has
+  no Postgres equivalent.
+- **Speed, honestly.** Postgres is ten times faster here. At 250k rows the
+  warehouse is paying for network latency and a resume with nothing to show for
+  it; it would win at a scale this project does not have.

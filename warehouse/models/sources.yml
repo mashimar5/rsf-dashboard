@@ -12,10 +12,11 @@ sources:
         description: Live samples, one per poll, four minutes apart.
         # The dbt-native version of /health/freshness. The thresholds are the
         # app's: STALE_AFTER_SECONDS is 15 minutes, three missed cycles.
-        loaded_at_field: observed_at
-        freshness:
-          warn_after: {count: 15, period: minute}
-          error_after: {count: 60, period: minute}
+        config:
+          loaded_at_field: observed_at
+          freshness:
+            warn_after: {count: 15, period: minute}
+            error_after: {count: 60, period: minute}
         columns:
           - name: observed_at
             description: When the poll ran. The API returns no measurement time.

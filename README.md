@@ -367,10 +367,15 @@ aggregation inside `store.weekday_bands` row for row — 84,008 of them, agreein
 to within floating-point noise. Source freshness on `readings` carries the app's
 own 15-minute threshold.
 
-A `snowflake` target exists in the profile and the time-zone macro branches on
-it, but that path is unproven until it runs against a real account.
-`warehouse/README.md` has the details; credentials come from the environment,
-and the directory is excluded from the app's Docker image.
+The same models also run on Snowflake (`--target snowflake`), against a copy
+loaded through an internal stage with `COPY INTO`. Both targets build the same
+36 nodes and agree row for row — 84,008 and 1,824 rows, nothing differing beyond
+2.2e-16, and the same 46 and 48 buckets on the two daylight-saving days, where
+`AT TIME ZONE` and `CONVERT_TIMEZONE` could easily have disagreed. Postgres
+finishes in 0.8 s against Snowflake's 8.2 s, which is the honest answer about
+250k rows in a warehouse. `warehouse/README.md` lists what differed; credentials
+come from the environment, and the directory is excluded from the app's Docker
+image.
 
 ## Layout
 
